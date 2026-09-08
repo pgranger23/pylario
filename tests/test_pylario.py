@@ -154,17 +154,25 @@ def test_tracks_ragged_selection():
 def test_display_without_pylarevd_raises_importerror():
     """Event.display() should give a clean actionable error when pylarevd is missing."""
     import sys
-    saved = sys.modules.get("pylarevd")
-    sys.modules["pylarevd"] = None
+    saved = {k: sys.modules.get(k) for k in list(sys.modules)
+             if k == "pylarevd" or k.startswith("pylarevd.")}
+    for k in list(sys.modules):
+        if k == "pylarevd" or k.startswith("pylarevd."):
+            sys.modules[k] = None
+    if "pylarevd" not in sys.modules:
+        sys.modules["pylarevd"] = None
     try:
         from pylario.event import Event
         ev = Event(None, 0)
         with pytest.raises(ImportError, match="requires the 'pylarevd' visualization package"):
             ev.display()
     finally:
-        if saved is not None:
-            sys.modules["pylarevd"] = saved
-        else:
+        for k, v in saved.items():
+            if v is not None:
+                sys.modules[k] = v
+            else:
+                sys.modules.pop(k, None)
+        if "pylarevd" not in saved:
             sys.modules.pop("pylarevd", None)
 
 

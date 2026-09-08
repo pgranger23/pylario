@@ -1450,8 +1450,8 @@ class Event:
         Requires the ``pylarevd`` visualization package.
         """
         try:
-            from pylarevd.display import display
-            return display(self, *args, **kwargs)
+            import pylarevd
+            return pylarevd.display(self, *args, **kwargs)
         except ImportError as exc:
             raise ImportError(
                 "Event.display() requires the 'pylarevd' visualization package.\n"
@@ -1462,8 +1462,8 @@ class Event:
     def display_flashes_3d(self, *args, **kwargs):
         """Reconstructed flashes in the detector volume. Requires ``pylarevd``."""
         try:
-            from pylarevd.display import display_flashes_3d
-            return display_flashes_3d(self, *args, **kwargs)
+            import pylarevd
+            return pylarevd.display_flashes_3d(self, *args, **kwargs)
         except ImportError as exc:
             raise ImportError(
                 "Event.display_flashes_3d() requires the 'pylarevd' visualization package.\n"
@@ -1473,8 +1473,8 @@ class Event:
     def display_optical(self, *args, **kwargs):
         """Return an OpticalDisplay for this event. Requires ``pylarevd``."""
         try:
-            from pylarevd.display import display_optical
-            return display_optical(self, *args, **kwargs)
+            import pylarevd
+            return pylarevd.display_optical(self, *args, **kwargs)
         except ImportError as exc:
             raise ImportError(
                 "Event.display_optical() requires the 'pylarevd' visualization package.\n"
@@ -1484,8 +1484,8 @@ class Event:
     def display_3d(self, *args, **kwargs):
         """Return a Display3D built from space points. Requires ``pylarevd``."""
         try:
-            from pylarevd.display import display_3d
-            return display_3d(self, *args, **kwargs)
+            import pylarevd
+            return pylarevd.display_3d(self, *args, **kwargs)
         except ImportError as exc:
             raise ImportError(
                 "Event.display_3d() requires the 'pylarevd' visualization package.\n"
