@@ -5,7 +5,7 @@
 # rebuild the shim -- never to display anything.
 #
 #   ./inlar.sh "bash shim/build_shim.sh"
-#   ./inlar.sh "python -m pylarevd.export_geometry --fcl <geo.fcl> --out <out.npz>"
+#   ./inlar.sh "python -m pylario.export_geometry --fcl <geo.fcl> --out <out.npz>"
 set -euo pipefail
 DUNESW_VER=${DUNESW_VER:-v10_22_00d00}
 DUNESW_QUAL=${DUNESW_QUAL:-e26:prof}

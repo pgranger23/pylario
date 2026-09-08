@@ -1,6 +1,6 @@
-"""Export a LArSoft geometry to a portable ``.npz`` pylar can read anywhere.
+"""Export a LArSoft geometry to a portable ``.npz`` pylario can read anywhere.
 
-This is the *only* part of pylar that needs LArSoft, and it runs once per
+This is the *only* part of pylario that needs LArSoft, and it runs once per
 detector geometry.  It loads ``libevdgeom.so`` (a small flat-C shim around
 ``lar::standalone::SetupGeometry``) through ``ctypes`` -- no ROOT, no cling, no
 compiled python extension -- and writes every wire endpoint plus the drift
@@ -8,9 +8,9 @@ linearisation to a file.
 
 Run it inside the SL7 container::
 
-    ./inlar.sh "python -m pylar.export_geometry \\
-        --fcl pylar/geom/dune10kt_1x2x6.fcl \\
-        --out pylar/geom/dune10kt_v6_1x2x6.npz"
+    ./inlar.sh "python -m pylario.export_geometry \\
+        --fcl pylario/geom/dune10kt_1x2x6.fcl \\
+        --out pylario/geom/dune10kt_v6_1x2x6.npz"
 
 Everything downstream is pure python and reads only the ``.npz``.
 """

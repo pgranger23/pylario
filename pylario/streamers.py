@@ -1,6 +1,6 @@
 """Sequential ROOT deserialiser for variable-length members.
 
-:mod:`pylar.artio` decodes member-wise vectors as numpy slices, which is
+:mod:`pylario.artio` decodes member-wise vectors as numpy slices, which is
 fast but requires every member to have a fixed on-disk size.  That covers hits
 and space points; it does not cover the products that carry containers --
 ``recob::Track`` (a trajectory of N points), ``recob::Shower``,

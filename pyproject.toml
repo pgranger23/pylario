@@ -3,7 +3,7 @@ requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "pylar"
+name = "pylario"
 version = "0.1.0"
 description = "Pure-Python reader and data model for art-ROOT (LArSoft) event files: reads directly with uproot, no ROOT/art/LArSoft needed"
 readme = "README.md"
@@ -18,7 +18,7 @@ xrootd = ["fsspec-xrootd>=0.2"]
 test = ["pytest>=7"]
 
 [tool.setuptools.packages.find]
-include = ["pylar*"]
+include = ["pylario*"]
 
 [tool.setuptools.package-data]
-pylar = ["geom/*.npz"]
+pylario = ["geom/*.npz"]

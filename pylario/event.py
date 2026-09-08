@@ -1,7 +1,7 @@
 """User-facing event/hit API.
 
-Ties an art file (:mod:`pylar.artio`) to a detector geometry
-(:mod:`pylar.geometry`) and exposes hits with physical coordinates already
+Ties an art file (:mod:`pylario.artio`) to a detector geometry
+(:mod:`pylario.geometry`) and exposes hits with physical coordinates already
 attached, so analysis and plotting code never have to think about wire
 wrapping or drift conversion.
 """
@@ -1456,7 +1456,7 @@ class Event:
             raise ImportError(
                 "Event.display() requires the 'pylarevd' visualization package.\n"
                 "  Install it with: pip install pylarevd\n"
-                "  Or use pylar purely as a data reader."
+                "  Or use pylario purely as a data reader."
             ) from exc
 
     def display_flashes_3d(self, *args, **kwargs):
@@ -1549,8 +1549,8 @@ class EventFile:
         found = sorted(glob.glob(os.path.join(here, "geom", "*.npz")))
         if not found:
             raise GeometryError(
-                "no geometry given and none found in pylar/geom/. "
-                "Export one with pylar.export_geometry (see its docstring).")
+                "no geometry given and none found in pylario/geom/. "
+                "Export one with pylario.export_geometry (see its docstring).")
 
         # The file records the Geometry service it was produced with, so match
         # on that rather than guessing. Guessing wrong is not a visible failure:
@@ -1565,7 +1565,7 @@ class EventFile:
                 f"this file was produced with the {wanted!r} geometry, which is "
                 f"not exported. Available: "
                 f"{', '.join(str(np.load(p, allow_pickle=False)['detector']) for p in found)}.\n"
-                f"Export it with pylar.export_geometry (see its docstring), "
+                f"Export it with pylario.export_geometry (see its docstring), "
                 f"or pass geometry=... to use one of the above anyway.")
 
         if len(found) > 1:

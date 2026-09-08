@@ -1,7 +1,7 @@
 """Detector geometry for the display, loaded from an exported ``.npz``.
 
 Nothing here is detector-specific: every quantity comes from the file written
-by :mod:`pylarevd.export_geometry`, which got it from LArSoft's own channel map.
+by :mod:`pylario.export_geometry`, which got it from LArSoft's own channel map.
 There are no hard-coded wire angles, pitches or drift constants.
 
 The central operation is turning a hit's ``geo::WireID`` into a *continuous
@@ -82,7 +82,7 @@ class Geometry:
             raise GeometryError(
                 f"geometry file not found: {path}\n"
                 "Export one inside the SL7 container with:\n"
-                "  ./inlar.sh \"cd pylar && python -m pylar.export_geometry "
+                "  ./inlar.sh \"cd pylario && python -m pylario.export_geometry "
                 "--fcl <geo.fcl> --out <out.npz>\"")
         self.path = path
         try:
@@ -98,9 +98,9 @@ class Geometry:
                    if k not in self._z]
         if missing:
             raise GeometryError(
-                f"{path} is not a pylar geometry file (missing "
+                f"{path} is not a pylario geometry file (missing "
                 f"{', '.join(missing)}). Re-export it with "
-                "python -m pylar.export_geometry.")
+                "python -m pylario.export_geometry.")
 
         self.detector = str(self._z["detector"])
         self.nchannels = int(self._z["nchannels"])

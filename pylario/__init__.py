@@ -1,10 +1,10 @@
-"""pylar - Pure-Python reader and data model for art-ROOT (LArSoft) event files.
+"""pylario - Pure-Python reader and data model for art-ROOT (LArSoft) event files.
 
 Reads art-ROOT files directly with uproot (no ROOT, art or LArSoft needed).
 Exposes hits, tracks, showers, space points, optical activity, and truth
 with physical detector coordinates attached.
 
-    from pylar import EventFile
+    from pylario import EventFile
 
     f = EventFile("reco.root")
     ev = f[0]

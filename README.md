@@ -1,4 +1,4 @@
-# pylar — pure-python reader and data model for art-ROOT (LArSoft) files
+# pylario — pure-python reader and data model for art-ROOT (LArSoft) files
 
 Reads **art-ROOT files directly** in pure Python. At read time there is no ROOT, no art, no LArSoft, and no compiled extension — just `uproot` + `numpy`.
 
@@ -12,15 +12,15 @@ art-ROOT file ──uproot──► artio.py ──► event.py ──► Hits, 
 ## Installation
 
 ```bash
-pip install pylar
+pip install pylario
 # or for remote XRootD / EOS support:
-pip install "pylar[xrootd]"
+pip install "pylario[xrootd]"
 ```
 
 ## Quick Start
 
 ```python
-from pylar import EventFile
+from pylario import EventFile
 
 # Open an art file (geometry is auto-detected from embedded FHiCL metadata)
 f = EventFile("reco.root")

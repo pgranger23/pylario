@@ -1,4 +1,4 @@
-"""Tests for pylar: art-ROOT reader, data model, and geometry."""
+"""Tests for pylario: art-ROOT reader, data model, and geometry."""
 
 from __future__ import annotations
 
@@ -6,19 +6,19 @@ import os
 import numpy as np
 import pytest
 
-from pylar import (
+from pylario import (
     ArtFile, ArtReadError, EventFile, Geometry, GeometryError,
     Hits, SpacePoints, Tracks, Showers, Vertices, OpticalActivity,
     TruthDeposits, MCParticles, Neutrino, PrimaryInteraction, physics
 )
 
-_DATA = os.environ.get("PYLAR_TEST_DATA", os.environ.get("PYLAREVD_TEST_DATA", ""))
+_DATA = os.environ.get("PYLARIO_TEST_DATA", os.environ.get("PYLAR_TEST_DATA", os.environ.get("PYLAREVD_TEST_DATA", "")))
 ROCKMU = os.environ.get(
-    "PYLAR_ROCKMU", os.path.join(_DATA, "rock_muons_reco1.root") if _DATA else "")
+    "PYLARIO_ROCKMU", os.environ.get("PYLAR_ROCKMU", os.path.join(_DATA, "rock_muons_reco1.root") if _DATA else ""))
 ATMNU = os.environ.get(
-    "PYLAR_ATMNU", os.path.join(_DATA, "atmnu_radio_reco.root") if _DATA else "")
+    "PYLARIO_ATMNU", os.environ.get("PYLAR_ATMNU", os.path.join(_DATA, "atmnu_radio_reco.root") if _DATA else ""))
 GEOM = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                    "pylar", "geom", "dune10kt_v6_1x2x6.npz")
+                    "pylario", "geom", "dune10kt_v6_1x2x6.npz")
 
 needs_data = pytest.mark.skipif(not os.path.exists(ROCKMU), reason="sample file absent")
 needs_geom = pytest.mark.skipif(not os.path.exists(GEOM), reason="geometry absent")
@@ -157,7 +157,7 @@ def test_display_without_pylarevd_raises_importerror():
     saved = sys.modules.get("pylarevd")
     sys.modules["pylarevd"] = None
     try:
-        from pylar.event import Event
+        from pylario.event import Event
         ev = Event(None, 0)
         with pytest.raises(ImportError, match="requires the 'pylarevd' visualization package"):
             ev.display()
