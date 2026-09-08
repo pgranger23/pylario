@@ -7,11 +7,18 @@ name = "pylario"
 version = "0.1.0"
 description = "Pure-Python reader and data model for art-ROOT (LArSoft) event files: reads directly with uproot, no ROOT/art/LArSoft needed"
 readme = "README.md"
+license = { file = "LICENSE" }
+authors = [{ name = "Pierre Granger" }]
 requires-python = ">=3.10"
 dependencies = [
     "numpy>=1.24",
     "uproot>=5.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/pgranger23/pylario"
+Repository = "https://github.com/pgranger23/pylario"
+Issues = "https://github.com/pgranger23/pylario/issues"
 
 [project.optional-dependencies]
 xrootd = ["fsspec-xrootd>=0.2"]
