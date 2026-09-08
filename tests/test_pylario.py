@@ -166,3 +166,10 @@ def test_display_without_pylarevd_raises_importerror():
             sys.modules["pylarevd"] = saved
         else:
             sys.modules.pop("pylarevd", None)
+
+
+def test_read_memberwise_column_empty():
+    """An empty vector (n=0) has no column prefix on disk and must yield an empty list."""
+    from pylario import streamers as st
+    cur = st.Cursor(b"", 0)
+    assert st.read_memberwise_column(None, None, cur, 0) == []

@@ -653,6 +653,8 @@ def read_memberwise_column(file, el, cur: Cursor, n: int) -> list:
     The column carries a single (byte count, version) prefix; each object then
     contributes its own length-prefixed run.
     """
+    if n == 0:
+        return []
     el = ElementSpec.of(el)      # artio passes raw uproot elements
     ftype = el.ftype
 
