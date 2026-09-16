@@ -1,0 +1,22 @@
+#include "geometry_dune.fcl"
+#include "detectorproperties_dune.fcl"
+#include "larproperties_dune.fcl"
+#include "detectorclocks_dune.fcl"
+
+# DUNE FD-HD 1x2x6 workspace, v5 geometry:
+#   Geometry: { GDML: "dune10kt_v5_refactored_1x2x6.gdml"  Name: "dune10kt_v5_1x2x6"
+#               SortingParameters: { tool_type: "GeoObjectSorterAPA" }
+#               SurfaceY: 147828 }
+# taken from dune10kt_1x2x6_v5_refactored_geo in dunecore's geometry_dune.fcl,
+# which is what a v5 1x2x6 sample records as its Geometry service.
+Geometry:           @local::dune10kt_1x2x6_v5_refactored_geo
+# matches the WireReadout service block written by the standard HD reco jobs
+# (service_provider DUNEWireReadout)
+WireReadout:        { ChannelsPerOpDet: 1 }
+DetectorProperties: @local::dunefd_detproperties
+LArProperties:      @local::dunefd_properties
+DetectorClocks:     @local::dunefd_detectorclocks
+
+# 4492-tick readout window: the dunefd default, and what the HD samples use.
+DetectorProperties.NumberTimeSamples: 4492
+DetectorProperties.ReadOutWindowSize: 4492
