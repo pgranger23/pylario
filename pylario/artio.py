@@ -294,7 +294,22 @@ def _skip_object(buf: bytes, pos: int) -> int:
 
 
 def _parse_event_auxiliary(buf: bytes) -> tuple[int, int, int]:
-    """Extract (run, subrun, event) from a serialised art::EventAuxiliary."""
+    """Extract (run, subrun, event) from a serialised art::EventAuxiliary.
+
+    Two layouts exist. Current art writes the EventAuxiliary object with a
+    processHistoryID_ ahead of the EventID. Older files (art::EventAuxiliary
+    class version 11, e.g. ProtoDUNE-SP Prod4 from dunetpc v09) split the
+    branch and the entry starts directly with the nested EventID ->
+    SubRunID -> RunID headers, recognised by their exact byte counts.
+    """
+    def count(at):
+        return struct.unpack(">I", buf[at:at + 4])[0] & ~0x40000000
+
+    if len(buf) >= 3 * _OBJ_HEADER + 12 and (
+            count(0), count(_OBJ_HEADER), count(2 * _OBJ_HEADER)) == (26, 16, 6):
+        pos = 3 * _OBJ_HEADER         # EventID -> SubRunID -> RunID, no EA header
+        run, subrun, event = struct.unpack(">III", buf[pos:pos + 12])
+        return int(run), int(subrun), int(event)
     pos = _OBJ_HEADER                 # into EventAuxiliary
     pos = _skip_object(buf, pos)      # past processHistoryID_ (Hash<2>, holds a string)
     pos += _OBJ_HEADER                # into EventID
@@ -565,8 +580,49 @@ class ArtFile:
         classes carrying containers, the variable members come back as lists
         (one entry per object) alongside the numpy columns.
         """
-        raw = self._entry_bytes(self._obj_branch(product), entry)
+        obj = self._obj_branch(product)
+        if len(obj.branches):
+            return self._read_split(obj, product, entry)
+        raw = self._entry_bytes(obj, entry)
         return self.decode(raw, classname, where=f"{product}[{entry}]")
+
+    def _read_split(self, obj, product: str, entry: int) -> dict:
+        """One event of a product written SPLIT: one sub-branch per member.
+
+        Older art files (e.g. ProtoDUNE-SP Prod4, dunetpc v09) split products
+        into a ROOT sub-branch per data member, so the ``.obj`` branch itself
+        holds only a 4-byte count -- which the member-wise decoder reported as
+        a truncated entry. uproot reads such leaves natively. Members come
+        back under the names the member-wise decoder uses (``fWireID.Plane``,
+        ``fXYZ[0]``); a fixed array leaf is split into its elements. Members
+        uproot cannot interpret (member-wise nested STL, e.g. trajectories)
+        are left out and listed in ``"_unreadable"``, so accessors that need
+        them fail on a KeyError naming the member rather than on bad data.
+        """
+        prefix = obj.name + "."
+        out: dict = {}
+        unreadable = []
+        for sub in obj.branches:
+            name = sub.name[len(prefix):] if sub.name.startswith(prefix) else sub.name
+            try:
+                val = sub.array(entry_start=entry, entry_stop=entry + 1,
+                                library="np")[0]
+            except Exception:
+                unreadable.append(name)
+                continue
+            m = re.match(r"^(.*)\[(\d+)\]$", name)
+            if isinstance(val, np.ndarray) and val.dtype != object:
+                val = _native(val)
+                if m and val.ndim == 2:
+                    for k in range(val.shape[1]):
+                        out[f"{m.group(1)}[{k}]"] = val[:, k]
+                    continue
+                out[name] = val
+            else:
+                out[name] = [np.asarray(v) if hasattr(v, "__len__")
+                             and not isinstance(v, str) else v for v in val]
+        out["_unreadable"] = unreadable
+        return out
 
     def _basket(self, branch, basket_i: int):
         """One decompressed basket, remembered between calls.

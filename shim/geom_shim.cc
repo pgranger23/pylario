@@ -6,6 +6,8 @@
 #include "larcorealg/Geometry/StandaloneGeometrySetup.h"
 #include "dunecore/Geometry/GeoObjectSorterAPA.h"
 #include "dunecore/Geometry/DuneApaWireReadoutGeom.h"
+#include "dunecore/Geometry/ProtoDUNEWireReadoutGeomv7.h"
+#include "dunecore/Geometry/ProtoDUNEWireReadoutGeomv8.h"
 #include "dunecore/Geometry/WireReadoutSorterAPA.h"
 #include "larcorealg/Geometry/OpDetGeo.h"
 #include "cetlib/filepath_maker.h"
@@ -34,8 +36,18 @@ int evd_geom_init(const char* fclfile) {
     auto gp    = pset.get<fhicl::ParameterSet>("Geometry");
     auto wp    = pset.get<fhicl::ParameterSet>("WireReadout");
     gGeom = lar::standalone::SetupGeometry<geo::GeoObjectSorterAPA>(gp);
-    gWire = std::make_unique<geo::DuneApaWireReadoutGeom>(
-              wp, gGeom.get(), std::make_unique<geo::WireReadoutSorterAPA>());
+    // Same choice as dunecore's DUNEWireReadout service. The ProtoDUNE-SP
+    // classes share the APA wire readout and add the real optical map
+    // (288 SSP channels on 60 photon detectors); the generic class assumed
+    // one channel per detector and gave optical hits the wrong positions.
+    const std::string det = gGeom->DetectorName();
+    if (det.find("protodunev7") != std::string::npos)
+      gWire = std::make_unique<geo::ProtoDUNEWireReadoutGeomv7>(wp, gGeom.get());
+    else if (det.find("protodunev8") != std::string::npos)
+      gWire = std::make_unique<geo::ProtoDUNEWireReadoutGeomv8>(wp, gGeom.get());
+    else
+      gWire = std::make_unique<geo::DuneApaWireReadoutGeom>(
+                wp, gGeom.get(), std::make_unique<geo::WireReadoutSorterAPA>());
 
     // Detector properties are optional: geometry alone is enough to draw wires,
     // but without them we cannot convert TDC ticks to a drift coordinate.
@@ -165,16 +177,25 @@ long evd_dump_tpcs(unsigned* cryo, unsigned* tpc,
 // channel -> position map the optical view can plot nothing but an index.
 // ---------------------------------------------------------------------------
 
+// Optical channel numbers need not be contiguous (ProtoDUNE-SP numbers its
+// 288 SSP channels with gaps), so the dump runs over 0..MaxOpChannel and
+// this returns the size of buffer that needs.
+static unsigned int opchannel_span() {
+  unsigned int n = 0, mx = 0;
+  try { n = gWire->NOpChannels(); } catch (...) {}
+  try { mx = gWire->MaxOpChannel() + 1; } catch (...) {}
+  return n > mx ? n : mx;
+}
+
 long evd_n_opchannels() {
   if (!gWire) return -1;
-  try { return gWire->NOpChannels(); } catch (...) { return 0; }
+  return opchannel_span();
 }
 
 long evd_dump_opchannels(unsigned* chan, unsigned* opdet,
                          double* x, double* y, double* z) {
   if (!gWire) return -1;
-  unsigned int n = 0;
-  try { n = gWire->NOpChannels(); } catch (...) { return 0; }
+  unsigned int n = opchannel_span();
   long i = 0;
   for (unsigned int c = 0; c < n; ++c) {
     try {
@@ -186,6 +207,42 @@ long evd_dump_opchannels(unsigned* chan, unsigned* opdet,
       ++i;
     } catch (...) {
       // a channel with no detector behind it: skip rather than abort the dump
+    }
+  }
+  return i;
+}
+
+// World-frame half extents of the detector behind each optical channel, in
+// the same channel order as evd_dump_opchannels. The local box corners are
+// transformed, so a bar lying along z comes out long in z whatever its local
+// axes are. Detectors differ in shape within one geometry (ProtoDUNE-SP mixes
+// 2 m light-guide bars with small ARAPUCA cells), so a display cannot infer
+// tile sizes from detector spacing.
+long evd_dump_opchannel_extents(double* hx, double* hy, double* hz) {
+  if (!gWire) return -1;
+  unsigned int n = opchannel_span();
+  long i = 0;
+  for (unsigned int c = 0; c < n; ++c) {
+    try {
+      auto const& od = gWire->OpDetGeoFromOpChannel(c);
+      (void)gWire->OpDetFromOpChannel(c);   // same filter as the position dump
+      double lo[3] = {1e30, 1e30, 1e30}, hi[3] = {-1e30, -1e30, -1e30};
+      for (int sx = -1; sx <= 1; sx += 2)
+        for (int sy = -1; sy <= 1; sy += 2)
+          for (int sz = -1; sz <= 1; sz += 2) {
+            auto w = od.toWorldCoords(geo::OpDetGeo::LocalPoint_t(
+                sx * od.HalfW(), sy * od.HalfH(), sz * od.HalfL()));
+            double v[3] = {w.X(), w.Y(), w.Z()};
+            for (int k = 0; k < 3; ++k) {
+              if (v[k] < lo[k]) lo[k] = v[k];
+              if (v[k] > hi[k]) hi[k] = v[k];
+            }
+          }
+      hx[i] = 0.5 * (hi[0] - lo[0]);
+      hy[i] = 0.5 * (hi[1] - lo[1]);
+      hz[i] = 0.5 * (hi[2] - lo[2]);
+      ++i;
+    } catch (...) {
     }
   }
   return i;

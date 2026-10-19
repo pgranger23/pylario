@@ -1,0 +1,29 @@
+#include "geometry_dune.fcl"
+#include "detectorproperties_dune.fcl"
+#include "larproperties_dune.fcl"
+#include "detectorclocks_dune.fcl"
+
+# ProtoDUNE-SP, geometry v7, as recorded by the PDSPProd4a MC (dunetpc v09_17_01):
+#   Geometry: { GDML: "protodune_v7.gdml"  Name: "protodunev7"
+#               SortingParameters: { ChannelsPerOpDet: 1 }  SurfaceY: 147828 }
+# (config_dumper -S on PDSPProd4a_protoDUNE_sp_reco_stage1_p1GeV_..._18803601_67_*.root)
+Geometry:           @local::protodunev7_geo
+WireReadout:        { ChannelsPerOpDet: 1 }
+DetectorProperties: @local::protodune_detproperties
+LArProperties:      @local::dunefd_properties
+DetectorClocks:     @local::protodune_detectorclocks
+
+# Values the reco job ran with (DetectorPropertiesServiceProtoDUNEsp /
+# DetectorClocksServiceStandard in the same dump).
+DetectorProperties.NumberTimeSamples: 6000
+DetectorProperties.ReadOutWindowSize: 6000
+DetectorProperties.Efield: [0.4867, 0.666, 0.8]
+DetectorProperties.Temperature: 87.68
+DetectorProperties.Electronlifetime: 35000
+DetectorClocks.TriggerOffsetTPC: -250
+DetectorClocks.G4RefTime: -250
+DetectorClocks.DefaultTrigTime: 250
+DetectorClocks.DefaultBeamTime: 250
+DetectorClocks.FramePeriod: 1600
+DetectorClocks.ClockSpeedTPC: 2
+DetectorClocks.InheritClockConfig: false

@@ -253,6 +253,23 @@ class Geometry:
         out[chan, 2] = self._z["o_z"]
         return out
 
+    @cached_property
+    def opdet_half_extent(self) -> np.ndarray:
+        """(n_opchannels, 3) world-frame half size of each channel's detector.
+
+        All NaN for geometries exported before sizes were recorded; displays
+        then fall back to the detector spacing.
+        """
+        n = len(self.opdet_xyz)
+        out = np.full((n, 3), np.nan)
+        if not self.has_optical or "o_hx" not in self._z:
+            return out
+        chan = self._z["o_chan"].astype(np.int64)
+        out[chan, 0] = self._z["o_hx"]
+        out[chan, 1] = self._z["o_hy"]
+        out[chan, 2] = self._z["o_hz"]
+        return out
+
     def opdet_positions(self, channels) -> np.ndarray:
         """Positions for an array of optical channel numbers (NaN if unknown)."""
         table = self.opdet_xyz
