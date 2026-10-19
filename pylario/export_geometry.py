@@ -39,7 +39,8 @@ def _load(libpath: str) -> ctypes.CDLL:
     lib.evd_det_name.restype = ctypes.c_char_p
     for fn in ("evd_n_wires_total", "evd_dump_wires", "evd_n_planes",
                "evd_dump_planes", "evd_dump_tpcs", "evd_n_tpcs_total",
-               "evd_n_opchannels", "evd_dump_opchannels"):
+               "evd_n_opchannels", "evd_dump_opchannels",
+               "evd_dump_opchannel_extents"):
         getattr(lib, fn).restype = ctypes.c_long
     # Declaring argtypes makes ctypes check every pointer's element type, so a
     # dtype that stops matching the C++ signature raises instead of silently
@@ -48,6 +49,7 @@ def _load(libpath: str) -> ctypes.CDLL:
     lib.evd_dump_planes.argtypes = [_U] * 3 + [_I, _U] + [_D] * 8
     lib.evd_dump_tpcs.argtypes = [_U] * 2 + [_D] * 6
     lib.evd_dump_opchannels.argtypes = [_U] * 2 + [_D] * 3
+    lib.evd_dump_opchannel_extents.argtypes = [_D] * 3
     return lib
 
 
@@ -132,12 +134,22 @@ def export(fcl: str, out: str, libpath: str = _DEFAULT_LIB, verbose: bool = True
     nop = max(lib.evd_n_opchannels(), 0)
     o_chan, o_det = np.empty(nop, np.uint32), np.empty(nop, np.uint32)
     o_x, o_y, o_z = (np.empty(nop, np.float64) for _ in range(3))
+    o_hx = o_hy = o_hz = np.empty(0, np.float64)
     if nop:
         got_op = lib.evd_dump_opchannels(
             *[_ptr(a) for a in (o_chan, o_det, o_x, o_y, o_z)])
         if got_op != nop:            # channels with no detector behind them
             o_chan, o_det = o_chan[:got_op], o_det[:got_op]
             o_x, o_y, o_z = o_x[:got_op], o_y[:got_op], o_z[:got_op]
+        # world-frame half extents of each channel's detector (a display
+        # cannot infer them from spacing when detector shapes differ)
+        o_hx, o_hy, o_hz = (np.empty(nop, np.float64) for _ in range(3))
+        got_ext = lib.evd_dump_opchannel_extents(
+            *[_ptr(a) for a in (o_hx, o_hy, o_hz)])
+        if got_ext == got_op:
+            o_hx, o_hy, o_hz = o_hx[:got_op], o_hy[:got_op], o_hz[:got_op]
+        else:
+            o_hx = o_hy = o_hz = np.full(got_op, np.nan)
         if verbose:
             print(f"[geom] {len(o_chan)} optical channels on "
                   f"{len(np.unique(o_det))} photon detectors", flush=True)
@@ -162,6 +174,7 @@ def export(fcl: str, out: str, libpath: str = _DEFAULT_LIB, verbose: bool = True
         t_xmax=t_xmax, t_ymax=t_ymax, t_zmax=t_zmax,
         # photon detectors
         o_chan=o_chan, o_opdet=o_det, o_x=o_x, o_y=o_y, o_z=o_z,
+        o_hx=o_hx, o_hy=o_hy, o_hz=o_hz,
     )
     if verbose:
         size = os.path.getsize(out) / 1e6

@@ -734,12 +734,15 @@ class Event:
         raw = self._src.art.read(product, _TRACK_CLASS, self.entry)
         polylines = []
         for traj in raw["fTraj"]:
-            pts = traj.get("fPositions") or []
-            if not pts:
+            pts = traj.get("fPositions")
+            if pts is None or len(pts) == 0:
                 polylines.append(np.zeros((0, 3)))
                 continue
-            xyz = np.array([[p["fCoordinates.fX"], p["fCoordinates.fY"],
-                             p["fCoordinates.fZ"]] for p in pts], dtype=np.float64)
+            if isinstance(pts, np.ndarray):      # split-file decoder: (N, 3)
+                xyz = np.asarray(pts, dtype=np.float64)
+            else:
+                xyz = np.array([[p["fCoordinates.fX"], p["fCoordinates.fY"],
+                                 p["fCoordinates.fZ"]] for p in pts], dtype=np.float64)
             polylines.append(xyz[~np.any(np.isclose(xyz, _BOGUS), axis=1)])
         n = len(polylines)
         # Pandora leaves the fit quality unset (-999); report that as NaN
@@ -890,6 +893,12 @@ class Event:
             for i, plist in enumerate(parts):
                 if not plist:
                     continue
+                # ProtoDUNE's beam generator also writes the beam-line halo,
+                # as process "primaryBackground"; the interaction is the beam
+                # particle alone (process "primary").
+                procs = [str(p.get("fprocess", "")) for p in plist]
+                if "primaryBackground" in procs and "primary" in procs:
+                    plist = [p for p, pr in zip(plist, procs) if pr == "primary"]
                 vertex = None
                 primary_parts = []
                 for p in plist:
@@ -1022,13 +1031,33 @@ class Event:
         readable.
         """
         product, raw = self._mc_raw(tag)
+        trajs = raw["ftrajectory"]
+        if len(trajs) and isinstance(trajs[0].get("ftrajectory"), np.ndarray):
+            # split-file decoder: (N, 8) arrays; vectorised, since a
+            # ProtoDUNE-SP event carries ~700k particles
+            n_steps = np.array([len(t["ftrajectory"]) for t in trajs])
+            keep = np.flatnonzero(n_steps >= min_points)
+            procs = raw["fprocess"]
+            return MCParticles(
+                label=product.rstrip("."),
+                points=[np.asarray(trajs[i]["ftrajectory"][:, :3], np.float64)
+                        for i in keep],
+                pdg=np.asarray(raw["fpdgCode"])[keep].astype(np.int32),
+                track_id=np.asarray(raw["ftrackId"])[keep].astype(np.int32),
+                mother=np.asarray(raw["fmother"])[keep].astype(np.int32),
+                process=[procs[i] for i in keep])
         pts, pdg, tid, mom, proc = [], [], [], [], []
         for i, traj in enumerate(raw["ftrajectory"]):
-            steps = traj.get("ftrajectory") or []
+            steps = traj.get("ftrajectory")
+            if steps is None:
+                steps = []
             if len(steps) < min_points:
                 continue
-            xyz = np.array([[s[0]["fP.fX"], s[0]["fP.fY"], s[0]["fP.fZ"]]
-                            for s in steps], dtype=np.float64)
+            if isinstance(steps, np.ndarray):    # split-file decoder: (N, 8)
+                xyz = np.asarray(steps[:, :3], dtype=np.float64)
+            else:
+                xyz = np.array([[s[0]["fP.fX"], s[0]["fP.fY"], s[0]["fP.fZ"]]
+                                for s in steps], dtype=np.float64)
             pts.append(xyz)
             pdg.append(raw["fpdgCode"][i])
             tid.append(raw["ftrackId"][i])
@@ -1419,7 +1448,10 @@ class Event:
                 "showers": bool(art.find_product("recob::Shower")),
                 "optical": bool(art.find_product("recob::OpFlash")),
                 "spacepoints": bool(art.find_product("recob::SpacePoint")),
-                "truth": bool(art.find_product("sim::SimEnergyDeposit"))}
+                # deposits, or at least true trajectories: a reco1 file such as
+                # ProtoDUNE-SP Prod4 keeps MCParticles but drops the deposits
+                "truth": bool(art.find_product("sim::SimEnergyDeposit")
+                              or art.find_product("simb::MCParticle"))}
         for name, route in self._ASSN_ROUTES.items():
             caps[f"group:{name}"] = all(
                 art.assns_products(left, right) for left, right, _d, _p in route)
