@@ -319,9 +319,161 @@ def _parse_event_auxiliary(buf: bytes) -> tuple[int, int, int]:
     return int(run), int(subrun), int(event)
 
 
+#: One serialised TLorentzVector: bytecount+version, TObject (version,
+#: fUniqueID, fBits), TVector3 header, TObject, fX fY fZ, then fE.
+_TLV = np.dtype([("h", "V6"), ("o", "V10"), ("vh", "V6"), ("vo", "V10"),
+                 ("x", ">f8"), ("y", ">f8"), ("z", ">f8"), ("e", ">f8")])
+#: One serialised ROOT::Math 3-vector of Double32_t: bytecount+version,
+#: checksum (a foreign class), then three floats.
+_V3D32 = np.dtype([("h", "V6"), ("ck", "V4"),
+                   ("x", ">f4"), ("y", ">f4"), ("z", ">f4")])
+
+
+def _decode_split_strings(buf: bytes, n_obj: int) -> list[str]:
+    """A split ``std::string`` leaf: bytecount+version, then per object a
+    1-byte length (255 -> a 4-byte length follows) and the characters.
+    uproot decodes these too, but at ~10 us per string: 6 s for the 700k
+    MCParticles of one ProtoDUNE-SP event."""
+    out, pos = [], 6
+    for _ in range(n_obj):
+        n = buf[pos]
+        pos += 1
+        if n == 255:
+            n = struct.unpack(">I", buf[pos:pos + 4])[0]
+            pos += 4
+        out.append(buf[pos:pos + n].decode("latin-1"))
+        pos += n
+    if pos != len(buf):
+        raise ValueError(f"string leaf: decoded {pos} of {len(buf)} bytes")
+    return out
+
+
+def _nested_kind(typename: str) -> str | None:
+    """Which member-wise nested collection _decode_split_nested handles."""
+    if "pair<TLorentzVector,TLorentzVector>" in typename:
+        return "tlv-pairs"
+    if ("PositionVector3D" in typename or "DisplacementVector3D" in typename) \
+            and "Double32_t" in typename:
+        return "vec3-d32"
+    return None
+
+
+def _decode_split_nested(buf: bytes, typename: str, n_obj: int):
+    """Decode one entry of a split leaf holding a member-wise STL collection
+    per object -- the leaves uproot reports as "memberwise serialization of
+    AsArray". Returns one numpy array per object, or None for a type not
+    handled here.
+
+    Layout, verified byte-exactly on ProtoDUNE-SP Prod4 files: one
+    bytecount (flag 0x40000000) | version 0x4009 (member-wise) | value class
+    version 0 + 4-byte checksum header for the whole entry, then per object a
+    count N followed by its N values. A pair<> is member-wise too: all N
+    ``first`` values, then all N ``second`` values.
+    """
+    if "pair<TLorentzVector,TLorentzVector>" in typename:
+        # Hundreds of thousands of particles per event (cosmics plus
+        # radiologicals): walk only the counts in python, drop the 4-byte
+        # count separators, and read every record in one numpy view.
+        rec = _TLV.itemsize
+        unpack = struct.Struct(">I").unpack_from
+        counts = np.empty(n_obj, np.int64)
+        mv = memoryview(buf)
+        pieces, pos = [], 12
+        for i in range(n_obj):
+            n = unpack(buf, pos)[0]
+            counts[i] = n
+            pieces.append(mv[pos + 4:pos + 4 + 2 * n * rec])
+            pos += 4 + 2 * n * rec
+        if pos != len(buf):
+            raise ValueError(f"{typename}: decoded {pos} of {len(buf)} bytes")
+        flat = np.frombuffer(b"".join(pieces), _TLV)
+        if len(flat) and (int.from_bytes(bytes(flat[:1].tobytes()[:4]), "big")
+                          & ~0x40000000) != 60:
+            raise ValueError("unexpected TLorentzVector size")
+        tot = int(counts.sum())
+        block = np.repeat(2 * (np.cumsum(counts) - counts), counts)
+        k = np.arange(tot) - np.repeat(np.cumsum(counts) - counts, counts)
+        f, sec = flat[block + k], flat[block + np.repeat(counts, counts) + k]
+        both = np.column_stack([f["x"], f["y"], f["z"], f["e"],
+                                sec["x"], sec["y"], sec["z"], sec["e"]])
+        return np.split(both, np.cumsum(counts)[:-1])   # x y z t | px py pz E
+    elif ("PositionVector3D" in typename or "DisplacementVector3D" in typename) \
+            and "Double32_t" in typename:
+        out, pos = [], 12
+        for _ in range(n_obj):
+            n = struct.unpack(">I", buf[pos:pos + 4])[0]
+            pos += 4
+            if n and (struct.unpack(">I", buf[pos:pos + 4])[0] & ~0x40000000) != 18:
+                raise ValueError("unexpected 3-vector size")
+            a = np.frombuffer(buf, _V3D32, count=n, offset=pos)
+            out.append(np.column_stack([a["x"], a["y"], a["z"]]).astype(np.float64))
+            pos += n * _V3D32.itemsize
+    else:
+        return None
+    if pos != len(buf):
+        raise ValueError(f"{typename}: decoded {pos} of {len(buf)} bytes")
+    return out
+
+
 def _native(a: np.ndarray) -> np.ndarray:
     """Byte-swap to native order so downstream numpy/plotly is fast."""
     return a.astype(a.dtype.newbyteorder("="), copy=False)
+
+
+class _LazyRecord(dict):
+    """A decoded product whose expensive members are decoded on first use."""
+
+    def __init__(self):
+        super().__init__()
+        self._loaders: dict = {}
+
+    def defer(self, key, loader) -> None:
+        self._loaders[key] = loader
+
+    def _load(self, key) -> None:
+        loader = self._loaders.pop(key, None)
+        if loader is not None:
+            try:
+                dict.__setitem__(self, key, loader())
+            except KeyError:
+                # not decodable: behave as if the member were absent, which
+                # is what accessors written for partial products expect
+                dict.get(self, "_unreadable", []).append(key)
+
+    def __getitem__(self, key):
+        self._load(key)
+        return dict.__getitem__(self, key)
+
+    def get(self, key, default=None):
+        self._load(key)
+        return dict.get(self, key, default)
+
+    def __contains__(self, key):
+        self._load(key)
+        return dict.__contains__(self, key)
+
+    def keys(self):
+        self._load_all()
+        return list(dict.keys(self))
+
+    def __iter__(self):
+        return iter(self.keys())
+
+    def __len__(self):
+        self._load_all()
+        return dict.__len__(self)
+
+    def _load_all(self) -> None:
+        for key in list(self._loaders):
+            self._load(key)
+
+    def items(self):
+        self._load_all()
+        return dict.items(self)
+
+    def values(self):
+        self._load_all()
+        return dict.values(self)
 
 
 class ArtFile:
@@ -586,6 +738,35 @@ class ArtFile:
         raw = self._entry_bytes(obj, entry)
         return self.decode(raw, classname, where=f"{product}[{entry}]")
 
+    def _split_particle_lists(self, sub, entry: int, n_obj: int) -> list:
+        """``MCTruth.fPartList`` from a split file: one list of particle dicts
+        per MCTruth, in the form the sequential decoder gives for unsplit
+        files. The leaf of a single MCTruth is laid out exactly like an
+        unsplit member-wise ``vector<simb::MCParticle>``, so the existing
+        decoder reads it; several MCTruths per event would need the column
+        boundaries between them, which that decoder does not report.
+        """
+        if n_obj != 1:
+            raise KeyError("fPartList: more than one MCTruth per event in a "
+                           "split file is not decodable yet")
+        cols = self.decode(self._entry_bytes(sub, entry), "simb::MCParticle",
+                           where=sub.name)
+        n = len(cols["fpdgCode"])
+        parts = []
+        for i in range(n):
+            p = {}
+            for key, col in cols.items():
+                if key == "ftrajectory":
+                    p["ftrajectory.ftrajectory"] = col[i].get("ftrajectory") or []
+                    p["ftrajectory.fTrajectoryProcess"] = col[i].get("fTrajectoryProcess")
+                else:
+                    try:
+                        p[key] = col[i]
+                    except (TypeError, IndexError, KeyError):
+                        pass
+            parts.append(p)
+        return [parts]
+
     def _read_split(self, obj, product: str, entry: int) -> dict:
         """One event of a product written SPLIT: one sub-branch per member.
 
@@ -600,16 +781,37 @@ class ArtFile:
         them fail on a KeyError naming the member rather than on bad data.
         """
         prefix = obj.name + "."
-        out: dict = {}
+        out = _LazyRecord()
         unreadable = []
+        n_obj = None
+        nested, deferred, strings = [], [], []
         for sub in obj.branches:
             name = sub.name[len(prefix):] if sub.name.startswith(prefix) else sub.name
+            interp = sub.interpretation
+            # AsStridedObjects subclasses AsDtype but decodes object by object
+            # (TLorentzVector, TVector3): ~8-17 s a member on ProtoDUNE-SP
+            cheap = isinstance(interp, uproot.interpretation.jagged.AsJagged) and \
+                isinstance(interp.content, uproot.interpretation.numerical.AsDtype) and \
+                not isinstance(interp.content, uproot.interpretation.objects.AsStridedObjects)
+            if not cheap:
+                if sub.typename == "std::string[]":
+                    strings.append((name, sub))
+                elif _nested_kind(sub.typename):
+                    nested.append((name, sub))
+                elif "AsObjects" in type(interp).__name__ or \
+                        "AsStridedObjects" in repr(interp):
+                    deferred.append((name, sub))
+                else:
+                    nested.append((name, sub))
+                continue
             try:
                 val = sub.array(entry_start=entry, entry_stop=entry + 1,
                                 library="np")[0]
             except Exception:
-                unreadable.append(name)
+                nested.append((name, sub))
                 continue
+            if n_obj is None and hasattr(val, "__len__") and not isinstance(val, str):
+                n_obj = len(val)
             m = re.match(r"^(.*)\[(\d+)\]$", name)
             if isinstance(val, np.ndarray) and val.dtype != object:
                 val = _native(val)
@@ -621,6 +823,54 @@ class ArtFile:
             else:
                 out[name] = [np.asarray(v) if hasattr(v, "__len__")
                              and not isinstance(v, str) else v for v in val]
+        for name, sub in strings:
+            try:
+                out[name] = _decode_split_strings(self._entry_bytes(sub, entry), n_obj)
+            except Exception:
+                deferred.append((name, sub))
+        # Object-valued members uproot can read, but slowly (TLorentzVector,
+        # std::set, ...): ~50 s per ProtoDUNE-SP event for members the data
+        # model rarely touches. They are decoded on first access.
+        for name, sub in deferred:
+            def load(sub=sub, name=name):
+                if sub.typename.startswith("std::vector<simb::MCParticle>"):
+                    return self._split_particle_lists(sub, entry, n_obj or 0)
+                try:
+                    val = sub.array(entry_start=entry, entry_stop=entry + 1,
+                                    library="np")[0]
+                except Exception:
+                    val = _decode_split_nested(self._entry_bytes(sub, entry),
+                                               sub.typename, n_obj or 0)
+                    if val is None:
+                        raise KeyError(f"{name}: not decodable from a split file")
+                    return val
+                if isinstance(val, np.ndarray) and val.dtype != object:
+                    return _native(val)
+                return [np.asarray(v) if hasattr(v, "__len__") and not isinstance(v, str)
+                        else v for v in val]
+            out.defer(name, load)
+        # Member-wise nested collections uproot cannot interpret: decode the
+        # ones the data model needs, and file them under the nested keys the
+        # sequential decoder uses (fTraj -> [{fPositions: ...}, ...]).
+        for name, sub in nested:
+            arrs = None
+            if n_obj is not None:
+                try:
+                    arrs = _decode_split_nested(
+                        self._entry_bytes(sub, entry), sub.typename, n_obj)
+                except Exception:
+                    arrs = None
+            if arrs is None:
+                unreadable.append(name)
+                continue
+            outer, _, inner = name.partition(".")
+            if not inner:
+                out[name] = arrs
+                continue
+            slot = out.setdefault(outer, [dict() for _ in range(n_obj)])
+            if isinstance(slot, list) and len(slot) == n_obj:
+                for d, a in zip(slot, arrs):
+                    d[inner] = a
         out["_unreadable"] = unreadable
         return out
 
