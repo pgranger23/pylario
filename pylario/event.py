@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import glob
 import os
+import zlib
 from dataclasses import dataclass
 from functools import cached_property, lru_cache, wraps
 
@@ -251,6 +252,11 @@ class MCParticles(_Selectable):
     track_id: np.ndarray
     mother: np.ndarray
     process: list
+    # Which generator (MCTruth product) made each particle: an index into
+    # ``generators`` (module label, ":instance" when there is one), -1 if
+    # unknown. None when the file has no MCParticle-MCTruth association.
+    generator: np.ndarray | None = None
+    generators: tuple = ()
 
     def __len__(self) -> int:
         return len(self.points)
@@ -1038,6 +1044,7 @@ class Event:
             n_steps = np.array([len(t["ftrajectory"]) for t in trajs])
             keep = np.flatnonzero(n_steps >= min_points)
             procs = raw["fprocess"]
+            gen, gens = self._mc_generators(product, len(trajs))
             return MCParticles(
                 label=product.rstrip("."),
                 points=[np.asarray(trajs[i]["ftrajectory"][:, :3], np.float64)
@@ -1045,8 +1052,9 @@ class Event:
                 pdg=np.asarray(raw["fpdgCode"])[keep].astype(np.int32),
                 track_id=np.asarray(raw["ftrackId"])[keep].astype(np.int32),
                 mother=np.asarray(raw["fmother"])[keep].astype(np.int32),
-                process=[procs[i] for i in keep])
-        pts, pdg, tid, mom, proc = [], [], [], [], []
+                process=[procs[i] for i in keep],
+                generator=None if gen is None else gen[keep], generators=gens)
+        pts, pdg, tid, mom, proc, orig = [], [], [], [], [], []
         for i, traj in enumerate(raw["ftrajectory"]):
             steps = traj.get("ftrajectory")
             if steps is None:
@@ -1063,10 +1071,49 @@ class Event:
             tid.append(raw["ftrackId"][i])
             mom.append(raw["fmother"][i])
             proc.append(raw["fprocess"][i])
+            orig.append(i)
+        gen, gens = self._mc_generators(product, len(raw["ftrajectory"]))
         return MCParticles(label=product.rstrip("."), points=pts,
                            pdg=np.asarray(pdg, np.int32),
                            track_id=np.asarray(tid, np.int32),
-                           mother=np.asarray(mom, np.int32), process=proc)
+                           mother=np.asarray(mom, np.int32), process=proc,
+                           generator=None if gen is None else gen[np.asarray(orig, np.int64)],
+                           generators=gens)
+
+    def _mc_generators(self, product: str, n: int):
+        """Generator of every particle in MCParticle ``product`` (length ``n``).
+
+        LArG4 writes ``Assns<MCParticle, MCTruth, GeneratedParticleInfo>``
+        linking every particle -- daughters included -- to the MCTruth it
+        descends from; the MCTruth's ProductID names the generator module.
+        Returns (index array or None, tuple of generator names).
+        """
+        art = self._src.art
+        cls, _, rest = product.partition("_")
+        name = f"simb::MCParticlesimb::MCTruthsim::GeneratedParticleInfoart::Assns_{rest}"
+        try:
+            if name not in art.events.keys(recursive=False):
+                return None, ()
+            a = art.read_assns(name, self.entry)
+        except Exception:
+            return None, ()
+        mine = a.left_id == zlib.crc32(product.encode())
+        lk, rid = a.left_key[mine], a.right_id[mine]
+        ok = (lk >= 0) & (lk < n)
+        lk, rid = lk[ok], rid[ok]
+        uniq, inv = np.unique(rid, return_inverse=True)
+        names = []
+        for u in uniq:
+            branch = art.product_name(int(u)) or f"product {int(u)}"
+            # simb::MCTruths_<module>_<instance>_<process>.
+            parts = branch.rstrip(".").split("_")
+            if len(parts) >= 4 and parts[0].endswith("MCTruths"):
+                names.append(parts[1] + (f":{parts[2]}" if parts[2] else ""))
+            else:
+                names.append(branch.rstrip("."))
+        gen = np.full(n, -1, np.int16)
+        gen[lk] = inv.astype(np.int16)
+        return gen, tuple(names)
 
     @_memoised
     def showers(self, tag: str | None = None, *, best_match: bool = True) -> Showers:

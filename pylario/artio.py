@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import re
 import struct
+import zlib
 from dataclasses import dataclass
 
 import numpy as np
@@ -682,10 +683,17 @@ class ArtFile:
             raise ArtReadError(f"{product}: no '.obj' sub-branch") from exc
 
     def read_assns(self, product: str, entry: int) -> "Assns":
-        """Decode an ``art::Assns`` product into paired index arrays."""
+        """Decode an ``art::Assns`` product into paired index arrays.
+
+        An Assns carrying data (``Assns<L, R, D>``, e.g. MCParticle-MCTruth with
+        ``sim::GeneratedParticleInfo``) derives from ``Assns<L, R, void>``, so it
+        has one more class header in front; its data vector is not decoded.
+        """
         from . import streamers as st
         raw = self._entry_bytes(self._obj_branch(product), entry)
         cur = st.Cursor(raw, 0)
+        if "voidart::Assns" not in product:
+            cur.header()                # Assns<L, R, D>
         cur.header()                    # the Assns object itself
         cur.header()                    # art::detail::AssnsBase (empty)
         left_key, left_id, nl = _read_ptr_vector(raw, cur)
@@ -694,6 +702,19 @@ class ArtFile:
             raise ArtReadError(
                 f"{product}: association sides disagree ({nl} vs {nr} pointers)")
         return Assns(product.rstrip("."), left_key, right_key, left_id, right_id)
+
+    def product_name(self, product_id: int) -> str | None:
+        """The branch an ``art::ProductID`` refers to, or None.
+
+        art 3 sets a ProductID to the CRC-32 of the product's canonical name,
+        which is the branch name including its trailing dot (verified on
+        FD-HD and ProtoDUNE-SP Prod4a files).
+        """
+        ids = getattr(self, "_product_ids", None)
+        if ids is None:
+            ids = self._product_ids = {
+                zlib.crc32(k.encode()): k for k in self.events.keys(recursive=False)}
+        return ids.get(int(product_id))
 
     def assns_products(self, left: str | None = None, right: str | None = None,
                        *, plain_first: bool = True) -> list[str]:
