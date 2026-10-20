@@ -55,3 +55,17 @@ def test_beam_particle_without_its_halo(ev):
     inter = ev.true_interaction()
     assert inter is not None and len(inter.particles) == 1
     assert ev.capabilities()["truth"]
+
+
+@needs_pdsp
+def test_every_particle_has_its_generator(ev):
+    # LArG4's MCParticle-MCTruth association (an Assns carrying data), with the
+    # MCTruth ProductIDs resolved to their generator module labels
+    mc = ev.mc_particles()
+    assert mc.generator is not None and (mc.generator >= 0).all()
+    names = set(mc.generators)
+    assert {"cosmicgenerator", "generator", "ar39"} <= names
+    # the beam interaction's particles all come from the beam generator
+    fi = np.isin(mc.track_id, ev.neutrino_track_ids())
+    assert fi.any()
+    assert {mc.generators[g] for g in np.unique(mc.generator[fi])} == {"generator"}

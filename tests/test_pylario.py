@@ -181,3 +181,29 @@ def test_read_memberwise_column_empty():
     from pylario import streamers as st
     cur = st.Cursor(b"", 0)
     assert st.read_memberwise_column(None, None, cur, 0) == []
+
+
+@needs_data
+def test_product_ids_resolve_to_branch_names():
+    # art 3: a ProductID is the CRC-32 of the branch name, trailing dot included
+    import zlib
+    art = ArtFile(ROCKMU)
+    name = next(k for k in art.events.keys(recursive=False)
+                if k.startswith("simb::MCParticles_"))
+    assert art.product_name(zlib.crc32(name.encode())) == name
+    assert art.product_name(12345) is None
+
+
+@pytest.mark.skipif(not os.path.exists(ATMNU), reason="sample file absent")
+def test_mc_generators_include_radiologicals():
+    from pylario import EventFile
+    ev = EventFile(ATMNU)[1]
+    mc = ev.mc_particles()
+    assert mc.generator is not None and (mc.generator >= 0).all()
+    names = [mc.generators[g] for g in mc.generator]
+    assert "generator" in names and "Ar39GenInLAr" in names
+    fi = np.isin(mc.track_id, ev.neutrino_track_ids())
+    assert {mc.generators[g] for g in np.unique(mc.generator[fi])} == {"generator"}
+    # selections carry the generator column along
+    sub = mc[mc.generator == mc.generators.index("Ar39GenInLAr")]
+    assert len(sub) and len(sub.generator) == len(sub) and sub.generators == mc.generators
