@@ -1900,6 +1900,22 @@ class EventFile:
         except Exception:
             pass
 
+    def release(self, entry: int | None = None) -> None:
+        """Free the memory a decoded event holds, keeping the file open.
+
+        Drops the cached :class:`Event` for ``entry`` (every one when None) and
+        the reader's decompressed baskets. For a process that decodes an event
+        once and moves on -- a bundle builder -- these caches only grow: four
+        ProtoDUNE-HD events kept ~4.8 GB warm, ~0.6 GB after releasing.
+        Releasing is always safe; the next access just decodes again.
+        """
+        if entry is None:
+            self._events.clear()
+        else:
+            n = len(self)
+            self._events.pop(entry + n if entry < 0 else entry, None)
+        self.art._baskets.clear()
+
     def __enter__(self) -> "EventFile":
         return self
 

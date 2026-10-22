@@ -96,3 +96,17 @@ def test_trajectories_still_frozen():
     assert all(not p.flags.writeable for p in mc.points[:1000])
     with pytest.raises(ValueError):
         mc.points[0][0, 0] = 1.0
+
+
+@needs_atmnu
+def test_release_drops_the_event_and_baskets_but_keeps_the_file():
+    f = EventFile(ATMNU)
+    ev = f[1]
+    n = len(ev.hits())
+    assert 1 in f._events and f.art._baskets
+    f.release(1)
+    assert 1 not in f._events and not f.art._baskets
+    assert len(f[1].hits()) == n                     # decodes again, same answer
+    f[2]
+    f.release()
+    assert not f._events
