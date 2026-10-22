@@ -21,7 +21,7 @@ _EXPORTS = {
     "Event": "event", "EventFile": "event", "Hits": "event",
     "MCParticles": "event", "Neutrino": "event", "OpticalActivity": "event",
     "PrimaryInteraction": "event", "Showers": "event", "SpacePoints": "event",
-    "Tracks": "event", "TruthDeposits": "event", "Vertices": "event",
+    "Tracks": "event", "TruthDeposits": "event", "TriggerChain": "event", "Vertices": "event",
     "Geometry": "geometry", "GeometryError": "geometry", "TPCBox": "geometry",
     "Containment": "geometry",
 }
