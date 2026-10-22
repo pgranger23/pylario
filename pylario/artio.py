@@ -377,27 +377,34 @@ def _decode_split_nested(buf: bytes, typename: str, n_obj: int):
         # count separators, and read every record in one numpy view.
         rec = _TLV.itemsize
         unpack = struct.Struct(">I").unpack_from
-        counts = np.empty(n_obj, np.int64)
-        mv = memoryview(buf)
-        pieces, pos = [], 12
-        for i in range(n_obj):
+        counts, starts = [], []
+        pos = 12
+        for _ in range(n_obj):
             n = unpack(buf, pos)[0]
-            counts[i] = n
-            pieces.append(mv[pos + 4:pos + 4 + 2 * n * rec])
+            counts.append(n)
+            starts.append(pos + 4)
             pos += 4 + 2 * n * rec
         if pos != len(buf):
             raise ValueError(f"{typename}: decoded {pos} of {len(buf)} bytes")
-        flat = np.frombuffer(b"".join(pieces), _TLV)
-        if len(flat) and (int.from_bytes(bytes(flat[:1].tobytes()[:4]), "big")
-                          & ~0x40000000) != 60:
-            raise ValueError("unexpected TLorentzVector size")
+        counts = np.asarray(counts, np.int64)
+        starts = np.asarray(starts, np.int64)
         tot = int(counts.sum())
-        block = np.repeat(2 * (np.cumsum(counts) - counts), counts)
+        raw = np.frombuffer(buf, np.uint8)
+        rows = np.lib.stride_tricks.as_strided(
+            raw, shape=(max(len(raw) - rec + 1, 0), rec), strides=(1, 1), writeable=False)
+        if tot and (int.from_bytes(bytes(rows[starts[counts > 0][0]][:4]), "big")
+                    & ~0x40000000) != 60:
+            raise ValueError("unexpected TLorentzVector size")
         k = np.arange(tot) - np.repeat(np.cumsum(counts) - counts, counts)
-        f, sec = flat[block + k], flat[block + np.repeat(counts, counts) + k]
+        own = np.repeat(starts, counts)
+        f = rows[own + rec * k].view(_TLV).reshape(tot)
+        sec = rows[own + rec * (np.repeat(counts, counts) + k)].view(_TLV).reshape(tot)
         both = np.column_stack([f["x"], f["y"], f["z"], f["e"],
-                                sec["x"], sec["y"], sec["z"], sec["e"]])
-        return np.split(both, np.cumsum(counts)[:-1])   # x y z t | px py pz E
+                                sec["x"], sec["y"], sec["z"], sec["e"]]).astype(np.float64)
+        # x y z t | px py pz E per object; plain slices (np.split costs ~3 us
+        # a piece: 1.9 s for 600k particles)
+        ends = np.cumsum(counts).tolist()
+        return [both[a:b] for a, b in zip([0] + ends[:-1], ends)]
     elif ("PositionVector3D" in typename or "DisplacementVector3D" in typename) \
             and "Double32_t" in typename:
         out, pos = [], 12
