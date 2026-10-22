@@ -420,6 +420,11 @@ def read_memberwise_elements(file, classname: str, cur: Cursor, n: int) -> list:
             # Flatten nested members to "outer.inner" exactly as read_object
             # does, so a caller sees the same keys whichever layout the file
             # used.
+            bulk = _fixed_objects(file, el.typename, cur, n)
+            if bulk is not None:
+                for key, col in bulk.items():
+                    columns[f"{name}.{key}"] = col
+                continue
             objs = [read_object(file, el.typename, cur) for _ in range(n)]
             for key in (objs[0].keys() if objs else ()):
                 columns[f"{name}.{key}"] = [o[key] for o in objs]
@@ -434,6 +439,55 @@ def read_memberwise_elements(file, classname: str, cur: Cursor, n: int) -> list:
             else:
                 columns[name] = cur.array(dt, n * length, size).reshape(n, length)
     return [{k: v[i] for k, v in columns.items()} for i in range(n)]
+
+
+def _fixed_objects(file, classname: str, cur: Cursor, n: int) -> "dict | None":
+    """*n* consecutive headered objects of a class made only of scalar members
+    (the ``Cartesian3D`` coordinates of every track point), read in bulk.
+
+    Every object must carry the same byte count and version as the first --
+    checked for all of them -- and the byte count must be the header plus the
+    members; otherwise None and the cursor is untouched. Values come back as
+    python lists, as the object-by-object reader gives them. The generic
+    reader cost 190k object reads for 200 tracks (1.2 s on ProtoDUNE-HD).
+    """
+    from .artio import _ROOT_TYPES
+    try:
+        els = _elements(file, classname)
+    except StreamerError:
+        return None
+    if not els or n <= 0:
+        return None
+    layout, width = [], 0
+    for e in els:
+        if e.ftype not in _ROOT_TYPES or e.array_length > 1:
+            return None
+        dt, size = _ROOT_TYPES[e.ftype]
+        layout.append((e.name, dt, width))
+        width += size
+    buf, pos = cur.buf, cur.pos
+    try:
+        bc, version = _HEAD.unpack_from(buf, pos)
+    except struct.error:
+        return None
+    if not bc & _BYTECOUNT_MASK:
+        return None
+    head = 6 + (4 if version == 0 else 0)        # version 0: a checksum follows
+    size = 4 + (bc & ~_BYTECOUNT_MASK)
+    if size != head + width or pos + n * size > len(buf):
+        return None
+    rec = np.frombuffer(buf, np.uint8, n * size, pos).reshape(n, size)
+    if np.any(rec[:, :6] != rec[0, :6]):          # same byte count + version for all
+        return None
+    if version == 0 and np.any(rec[:, 6:10] != rec[0, 6:10]):
+        return None
+    out = {}
+    for name, dt, off in layout:
+        width_e = np.dtype(dt).itemsize
+        col = np.ascontiguousarray(rec[:, head + off:head + off + width_e]).view(dt).reshape(n)
+        out[name] = col.astype(np.dtype(dt).newbyteorder("=")).tolist()
+    cur.pos = pos + n * size
+    return out
 
 
 def read_object(file, classname: str, cur: Cursor, *, headered: bool = True) -> dict:
@@ -730,43 +784,66 @@ def _trajectory_column(file, classname: str, cur: Cursor, n: int):
     """
     buf, pos = cur.buf, cur.pos
     steps_name, proc_name = (e.name for e in _elements(file, classname))
-    obj_head, mw_head = _TRAJ_HEAD.unpack_from, _MW_HEAD.unpack_from
-    mask, mw, low = _BYTECOUNT_MASK, 0x4000, ~_BYTECOUNT_MASK
-    counts, starts = [], []
-    procs: list = [[] for _ in range(n)]
+    mask, low = _BYTECOUNT_MASK, ~_BYTECOUNT_MASK
+    # python follows only the chain of object byte counts; every other header
+    # field is then read and checked for all objects at once
+    u4 = _U4.unpack_from
+    objs = []
+    append = objs.append
     try:
-        for i in range(n):
-            bc, _ver, sbc, sver, svv, _ck, k = obj_head(buf, pos)
-            end = pos + 4 + (bc & low)
-            p = pos + 10 + (sbc & low)            # process vector
-            # flags, member-wise bits, value version 0 (checksummed) and
-            # the steps byte count matching 2k 64-byte records
-            if not (bc & sbc & mask and sver & mw) or svv or pos + 22 + 128 * k != p:
-                return None
-            counts.append(k)
-            starts.append(pos + 22)
-            pbc, pver, pvv, _ck, m = mw_head(buf, p)
-            if not (pbc & mask and pver & mw) or pvv or p + 16 + 9 * m != end \
-                    or p + 4 + (pbc & low) != end:
-                return None
-            if m:
-                idx = np.frombuffer(buf, ">u8", m, p + 16).astype(np.uint64)
-                code = np.frombuffer(buf, "u1", m, p + 16 + 8 * m)
-                procs[i] = list(zip(idx, code))
-            pos = end
-    except (struct.error, ValueError):
+        for _ in range(n):
+            append(pos)
+            pos += 4 + (u4(buf, pos)[0] & low)
+    except struct.error:
         return None
-    if pos > len(buf):
+    if pos > len(buf) or not n:
+        return None
+    obj = np.asarray(objs, np.int64)
+    if np.any(obj + 38 > len(buf)):
+        return None
+    raw = np.frombuffer(buf, np.uint8)
+
+    def word(at, size, dtype):
+        """Big-endian values of *size* bytes at byte offsets *at*."""
+        rows = np.lib.stride_tricks.as_strided(
+            raw, shape=(len(raw) - size + 1, size), strides=(1, 1), writeable=False)
+        return rows[at].view(dtype).reshape(len(at)).astype(np.int64)
+
+    try:
+        return _trajectory_records(buf, raw, word, obj, n, pos, cur, steps_name, proc_name)
+    except (IndexError, ValueError):
         return None
 
-    counts = np.asarray(counts, np.int64)
-    starts = np.asarray(starts, np.int64)
+
+def _trajectory_records(buf, raw, word, obj, n, pos, cur, steps_name, proc_name):
+    """The bulk half of :func:`_trajectory_column`, given every object's offset."""
+    mask, low = _BYTECOUNT_MASK, ~_BYTECOUNT_MASK
+    bc = word(obj, 4, ">u4")
+    end = obj + 4 + (bc & low)
+    sbc, sver, svv = word(obj + 6, 4, ">u4"), word(obj + 10, 2, ">u2"), word(obj + 12, 2, ">u2")
+    counts = word(obj + 18, 4, ">u4")
+    p = obj + 10 + (sbc & low)                    # process vector
+    # flags, member-wise bits, value version 0 (checksummed), the steps byte
+    # count matching 2N 64-byte records, the process vector inside the object
+    if np.any((bc & mask) == 0) or np.any((sbc & mask) == 0) or np.any((sver & 0x4000) == 0) \
+            or np.any(svv != 0) or np.any(obj + 22 + 128 * counts != p) or np.any(p + 16 > end):
+        return None
+    pbc, pver, pvv = word(p, 4, ">u4"), word(p + 4, 2, ">u2"), word(p + 6, 2, ">u2")
+    m = word(p + 12, 4, ">u4")
+    if np.any((pbc & mask) == 0) or np.any((pver & 0x4000) == 0) or np.any(pvv != 0) \
+            or np.any(p + 16 + 9 * m != end) or np.any(p + 4 + (pbc & low) != end):
+        return None
+    procs: list = [[] for _ in range(n)]
+    for i in np.flatnonzero(m).tolist():
+        k, q = int(m[i]), int(p[i]) + 16
+        procs[i] = list(zip(np.frombuffer(buf, ">u8", k, q).astype(np.uint64),
+                            np.frombuffer(buf, "u1", k, q + 8 * k)))
+    starts = obj + 22
     tot = int(counts.sum())
     if tot:
         # all records of the column, in object order: object i's 2N records
         # start at starts[i]; gather them with one fancy index over a 64-byte
         # strided view of the buffer
-        raw = np.frombuffer(buf, np.uint8)
         rows = np.lib.stride_tricks.as_strided(
             raw, shape=(len(raw) - _TLV_REC.itemsize + 1, _TLV_REC.itemsize),
             strides=(1, 1), writeable=False)
