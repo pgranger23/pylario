@@ -1,5 +1,10 @@
 """Sequential ROOT deserialiser for variable-length members.
 
+(The columns that dominate truth decoding -- ``simb::MCTrajectory``, primitive
+containers such as ``set<int>`` daughters, strings -- have vectorised readers
+below that python-walk only the counts; they verify every header and hand the
+column back to the generic walk on anything unexpected.)
+
 :mod:`pylario.artio` decodes member-wise vectors as numpy slices, which is
 fast but requires every member to have a fixed on-disk size.  That covers hits
 and space points; it does not cover the products that carry containers --
@@ -647,6 +652,173 @@ def _read_element(file, el, cur: Cursor, out: dict, budget_end: int = -1,
         out[name] = cur.array(dt, length, size)
 
 
+#: One serialised TLorentzVector: byte count + version, TObject (version,
+#: fUniqueID, fBits), the TVector3 fP with its own byte count + version and
+#: TObject, fX fY fZ, then fE. 64 bytes; the byte counts say 60 and 36.
+_TLV_REC = np.dtype([("bc", ">u4"), ("ver", ">u2"), ("obj", "V10"),
+                     ("vbc", ">u4"), ("vver", ">u2"), ("vobj", "V10"),
+                     ("x", ">f8"), ("y", ">f8"), ("z", ">f8"), ("e", ">f8")])
+_TLV_BC, _TV3_BC = 60, 36
+#: simb::MCTrajectory's two members, by on-disk type (spaces dropped)
+_TRAJ_STEPS = "vector<pair<TLorentzVector,TLorentzVector>>"
+_TRAJ_PROC = "vector<pair<unsignedlong,unsignedchar>>"
+_HEAD = struct.Struct(">IH")             # byte count, version
+_MW_HEAD = struct.Struct(">IHHII")       # byte count, version, value version, checksum, count
+_TRAJ_HEAD = struct.Struct(">IHIHHII")   # an object's (byte count, version), then _MW_HEAD
+_U4 = struct.Struct(">I")
+
+
+def _pieces(arr: np.ndarray, counts: np.ndarray) -> list:
+    """*arr* cut into consecutive views of the given lengths. np.split does the
+    same at ~3 us a piece: 2.5 s for one event's 761k particles."""
+    ends = np.cumsum(counts).tolist()
+    return [arr[a:b] for a, b in zip([0] + ends[:-1], ends)]
+
+
+def _string_column(cur: Cursor, n: int, end: int) -> list:
+    """*n* consecutive bare strings, in one tight loop (Cursor.string per value
+    cost 1.8 us; 1.5M of them in one MCParticle product)."""
+    buf, pos = cur.buf, cur.pos
+    limit = end if end >= 0 else len(buf)
+    u4 = _U4.unpack_from
+    out = []
+    append = out.append
+    for _ in range(n):
+        k = buf[pos]
+        pos += 1
+        if k == 255:
+            k = u4(buf, pos)[0]
+            pos += 4
+        append(buf[pos:pos + k].decode("utf-8", "replace"))
+        pos += k
+        if pos > limit:
+            raise StreamerError(f"string column runs {pos - limit} bytes past its end")
+    cur.pos = pos
+    return out
+
+
+def _is_trajectory_class(file, classname: str) -> bool:
+    """Does *classname* have exactly simb::MCTrajectory's on-disk shape?"""
+    try:
+        els = _elements(file, classname)
+    except StreamerError:
+        return False
+    types = [e.typename.replace(" ", "") for e in els]
+    return types == [_TRAJ_STEPS, _TRAJ_PROC] and all(e.ftype == _STL for e in els)
+
+
+def _trajectory_column(file, classname: str, cur: Cursor, n: int):
+    """A member-wise column of *n* simb::MCTrajectory objects, decoded at once.
+
+    The generic reader walks this object by object, building a dict per
+    TLorentzVector: 72 s for the 761k particles (1.5M steps) of one
+    ProtoDUNE-HD event with cosmics. Here python reads only the counts; every
+    TLorentzVector then comes from one numpy view. Layout, checked byte-exactly
+    against the generic reader::
+
+        per object: byte count | version
+          steps:    byte count | version|0x4000 | value version 0 | checksum | N
+                    N first TLorentzVectors, then N second ones (64 B each)
+          process:  byte count | version|0x4000 | value version 0 | checksum | K
+                    K unsigned long (step index), then K unsigned char (process)
+
+    Returns ``[{steps_name: (N, 8) array [x y z t px py pz E], proc_name:
+    [(index, process), ...]}, ...]``, the steps in the array form the split-file
+    decoder already gives, or None if the bytes do not have exactly this
+    layout (every header and byte count is checked), so the caller can fall
+    back to the generic reader.
+    """
+    buf, pos = cur.buf, cur.pos
+    steps_name, proc_name = (e.name for e in _elements(file, classname))
+    obj_head, mw_head = _TRAJ_HEAD.unpack_from, _MW_HEAD.unpack_from
+    mask, mw, low = _BYTECOUNT_MASK, 0x4000, ~_BYTECOUNT_MASK
+    counts, starts = [], []
+    procs: list = [[] for _ in range(n)]
+    try:
+        for i in range(n):
+            bc, _ver, sbc, sver, svv, _ck, k = obj_head(buf, pos)
+            end = pos + 4 + (bc & low)
+            p = pos + 10 + (sbc & low)            # process vector
+            # flags, member-wise bits, value version 0 (checksummed) and
+            # the steps byte count matching 2k 64-byte records
+            if not (bc & sbc & mask and sver & mw) or svv or pos + 22 + 128 * k != p:
+                return None
+            counts.append(k)
+            starts.append(pos + 22)
+            pbc, pver, pvv, _ck, m = mw_head(buf, p)
+            if not (pbc & mask and pver & mw) or pvv or p + 16 + 9 * m != end \
+                    or p + 4 + (pbc & low) != end:
+                return None
+            if m:
+                idx = np.frombuffer(buf, ">u8", m, p + 16).astype(np.uint64)
+                code = np.frombuffer(buf, "u1", m, p + 16 + 8 * m)
+                procs[i] = list(zip(idx, code))
+            pos = end
+    except (struct.error, ValueError):
+        return None
+    if pos > len(buf):
+        return None
+
+    counts = np.asarray(counts, np.int64)
+    starts = np.asarray(starts, np.int64)
+    tot = int(counts.sum())
+    if tot:
+        # all records of the column, in object order: object i's 2N records
+        # start at starts[i]; gather them with one fancy index over a 64-byte
+        # strided view of the buffer
+        raw = np.frombuffer(buf, np.uint8)
+        rows = np.lib.stride_tricks.as_strided(
+            raw, shape=(len(raw) - _TLV_REC.itemsize + 1, _TLV_REC.itemsize),
+            strides=(1, 1), writeable=False)
+        first = np.repeat(np.cumsum(counts) - counts, counts)       # per step
+        k = np.arange(tot) - first                                 # step within object
+        own = np.repeat(starts, counts)
+        a = rows[own + 64 * k].view(_TLV_REC).reshape(tot)
+        b = rows[own + 64 * (np.repeat(counts, counts) + k)].view(_TLV_REC).reshape(tot)
+        for r in (a, b):
+            if np.any(r["bc"] != mask | _TLV_BC) or np.any(r["vbc"] != mask | _TV3_BC):
+                return None
+        both = np.column_stack([a["x"], a["y"], a["z"], a["e"],
+                                b["x"], b["y"], b["z"], b["e"]]).astype(np.float64)
+    else:
+        both = np.zeros((0, 8))
+    steps = _pieces(both, counts)
+    cur.pos = pos
+    return [{steps_name: s, proc_name: pr} for s, pr in zip(steps, procs)]
+
+
+def _primitive_runs(cur: Cursor, typename: str, n: int, end: int):
+    """*n* length-prefixed runs of a primitive type (``set<int>`` daughters), as
+    one numpy read split per object, instead of one small array per object
+    (3.4 s for 761k particles). None, with the cursor untouched, if a count
+    overruns the column."""
+    dt, size = _PRIMITIVES[typename]
+    buf, pos = cur.buf, cur.pos
+    limit = end if end >= 0 else len(buf)
+    u4 = _U4.unpack_from
+    counts, starts = [], []
+    try:
+        for _ in range(n):
+            c = u4(buf, pos)[0]
+            counts.append(c)
+            starts.append(pos + 4)
+            pos += 4 + c * size
+    except struct.error:
+        return None
+    if pos > limit:
+        return None
+    counts = np.asarray(counts, np.int64)
+    tot = int(counts.sum())
+    first = np.repeat(np.cumsum(counts) - counts, counts)
+    at = np.repeat(np.asarray(starts, np.int64), counts) + size * (np.arange(tot) - first)
+    raw = np.frombuffer(buf, np.uint8)
+    rows = np.lib.stride_tricks.as_strided(raw, shape=(max(len(raw) - size + 1, 0), size),
+                                           strides=(1, 1), writeable=False)
+    vals = rows[at].view(dt).reshape(tot).astype(np.dtype(dt).newbyteorder("="))
+    cur.pos = pos
+    return _pieces(vals, counts)
+
+
 def read_memberwise_column(file, el, cur: Cursor, n: int) -> list:
     """Read one variable-length member for all *n* objects of a member-wise vector.
 
@@ -662,6 +834,12 @@ def read_memberwise_column(file, el, cur: Cursor, n: int) -> list:
         # A nested object member is written object-wise within its column:
         # no shared prefix, but every object keeps its own byte-count header
         # (this is what makes geo::WireID 41 bytes inside recob::Hit).
+        if _is_trajectory_class(file, el.typename):
+            start = cur.pos
+            fast = _trajectory_column(file, el.typename, cur, n)
+            if fast is not None:
+                return fast
+            cur.pos = start
         return [read_object(file, el.typename, cur) for _ in range(n)]
 
     # An STL member's column has one shared prefix, then a length-prefixed run
@@ -675,10 +853,14 @@ def read_memberwise_column(file, el, cur: Cursor, n: int) -> list:
     kind, args = parse_type(el.typename)
     kind = kind.replace("std::", "")
     if el.typename.strip() in ("string", "std::string"):
-        values = [cur.string() for _ in range(n)]
+        values = _string_column(cur, n, end)
     elif kind in _SEQUENCES:
-        values = [read_sequence(file, args[0], cur, headered=False)
-                  for _ in range(n)]
+        values = None
+        if args[0].strip() in _PRIMITIVES:
+            values = _primitive_runs(cur, args[0].strip(), n, end)
+        if values is None:          # not primitive, or let the generic reader raise
+            values = [read_sequence(file, args[0], cur, headered=False)
+                      for _ in range(n)]
     elif kind == "map":
         values = [read_sequence(file, f"pair<{args[0]},{args[1]}>", cur,
                                 headered=False) for _ in range(n)]
