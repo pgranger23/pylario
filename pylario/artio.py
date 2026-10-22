@@ -416,6 +416,19 @@ def _decode_split_nested(buf: bytes, typename: str, n_obj: int):
     return out
 
 
+def _steps_as_pairs(steps) -> list:
+    """Trajectory steps as (position, momentum) dicts with ``fP.fX`` ... ``fE``
+    keys -- the form MCTruth's particle lists are read in -- from either the
+    generic decoder's pairs or the (N, 8) array of the fast ones."""
+    if steps is None:
+        return []
+    if not isinstance(steps, np.ndarray):
+        return list(steps)
+    keys = ("fP.fX", "fP.fY", "fP.fZ", "fE")
+    return [(dict(zip(keys, map(float, r[:4]))), dict(zip(keys, map(float, r[4:]))))
+            for r in steps]
+
+
 def _native(a: np.ndarray) -> np.ndarray:
     """Byte-swap to native order so downstream numpy/plotly is fast."""
     return a.astype(a.dtype.newbyteorder("="), copy=False)
@@ -751,7 +764,9 @@ class ArtFile:
 
         Returns a dict of parallel numpy columns for fixed-size classes; for
         classes carrying containers, the variable members come back as lists
-        (one entry per object) alongside the numpy columns.
+        (one entry per object) alongside the numpy columns. MCParticle
+        trajectories come back as one ``(N, 8)`` array per particle
+        (``x y z t px py pz E``), from split and unsplit files alike.
         """
         obj = self._obj_branch(product)
         if len(obj.branches):
@@ -778,7 +793,7 @@ class ArtFile:
             p = {}
             for key, col in cols.items():
                 if key == "ftrajectory":
-                    p["ftrajectory.ftrajectory"] = col[i].get("ftrajectory") or []
+                    p["ftrajectory.ftrajectory"] = _steps_as_pairs(col[i].get("ftrajectory"))
                     p["ftrajectory.fTrajectoryProcess"] = col[i].get("fTrajectoryProcess")
                 else:
                     try:
