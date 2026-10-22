@@ -1,0 +1,32 @@
+#include "geometry_dune.fcl"
+#include "detectorproperties_dune.fcl"
+#include "larproperties_dune.fcl"
+#include "detectorclocks_dune.fcl"
+
+# ProtoDUNE-HD, geometry v6, as recorded by the 2026a BSM beam-neutrino MC
+# (prod_protodunehd_beamneutrino_1_342725_42_..._reco_stage2.root, dunesw v10_17_02d00):
+#   Geometry: { GDML: "protodunehd_v6_refactored.gdml"  Name: "protodunehdv6"
+#               SortingParameters: { tool_type: "GeoObjectSorterAPA" }  SurfaceY: 147828 }
+#   WireReadout: { ChannelsPerOpDet: 1  WireReadoutClass: "DuneApaWireReadout"
+#                  service_provider: "DUNEWireReadout" }
+# read back out of the file's own RootFileDB parameter sets, not guessed.
+Geometry:           @local::protodunehdv6_geo
+WireReadout:        { ChannelsPerOpDet: 1 }
+DetectorProperties: @local::protodunehd_detproperties
+LArProperties:      @local::dunefd_properties
+DetectorClocks:     @local::protodunehd_detectorclocks
+
+# Values the reco job ran with (DetectorPropertiesServiceStandard /
+# DetectorClocksServiceStandard in the same file).
+DetectorProperties.NumberTimeSamples: 6000
+DetectorProperties.ReadOutWindowSize: 6000
+DetectorProperties.Efield: [0.4867, 0.666, 0.8]
+DetectorProperties.Temperature: 87.68
+DetectorProperties.Electronlifetime: 35000
+DetectorClocks.TriggerOffsetTPC: -250
+DetectorClocks.G4RefTime: -250
+DetectorClocks.DefaultTrigTime: 250
+DetectorClocks.DefaultBeamTime: 250
+DetectorClocks.FramePeriod: 1600
+DetectorClocks.ClockSpeedTPC: 2
+DetectorClocks.InheritClockConfig: false

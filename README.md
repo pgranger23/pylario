@@ -52,6 +52,12 @@ for trk in tracks.points:
 nu = ev.neutrino()
 if nu:
     print(nu.describe())
+
+# Online trigger chain (dunetrigger TPs -> TAs -> TCs), times in TPC ticks
+tr = ev.trigger()
+print(tr.n_tp, tr.n_ta, tr.n_tc)
+for tps in tr.ta_tps:                  # primitive indices of each activity
+    print(tr.tp_channel[tps].min(), tr.tp_channel[tps].max())
 ```
 
 ## Visualization

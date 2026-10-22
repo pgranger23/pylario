@@ -45,6 +45,15 @@ _SHOWER_CLASS = "recob::Shower"
 _MCTRUTH_CLASS = "simb::MCTruth"
 _PFP_CLASS = "recob::PFParticle"
 _PFPMETA_CLASS = "larpandoraobj::PFParticleMetadata"
+_TP_CLASS = "dunedaq::trgdataformats::TriggerPrimitive"
+_TA_CLASS = "dunedaq::trgdataformats::TriggerActivityData"
+_TC_CLASS = "dunedaq::trgdataformats::TriggerCandidateData"
+
+#: The DUNE timing system (DTS) clock that stamps every trigger object [MHz].
+DTS_CLOCK_MHZ = 62.5
+#: DTS times above this are absolute DAQ timestamps (> ~3 min since the epoch of
+#: the clock), not offsets into the readout window.
+_DTS_ABSOLUTE = 1e10
 
 #: Pandora writes both a track and a shower for every PFParticle; its own
 #: ``TrackScore`` decides which one is meant. 0.5 is Pandora's boundary, and on
@@ -479,6 +488,107 @@ class OpticalActivity(_Selectable):
     def __repr__(self) -> str:
         nf = int(self.is_flash.sum())
         return f"<OpticalActivity {self.label!r} flashes={nf} hits={len(self) - nf}>"
+
+
+@dataclass
+class TriggerChain:
+    """The online trigger chain of one event: primitives -> activities -> candidates.
+
+    DUNE's DAQ (or its LArSoft emulation, ``dunetrigger``) finds *trigger
+    primitives* (TPs: one above-threshold pulse on one channel), groups them
+    into *trigger activities* (TAs) and turns those into *trigger candidates*
+    (TCs). All times are converted from the 62.5 MHz DTS clock to TPC ticks of
+    the file's own ``DetectorClocksService`` (``ClockSpeedTPC``), with DTS 0 at
+    tick 0 -- how the simulation writes them. Measured on ProtoDUNE-HD MC
+    against ``recob::Hit::PeakTime`` on the same channels: a constant -5 tick
+    offset at every drift time (the TP peak is on the raw pulse, the hit on
+    the deconvolved one), and no scale error.
+
+    Enum codes are kept as stored; :data:`TP_ALGORITHMS`, :data:`TA_ALGORITHMS`,
+    :data:`TC_TYPES` and :data:`TC_ALGORITHMS` name them.
+    """
+
+    label: str                    # products, "tp + ta + tc"
+    ticks_per_dts: float          # TPC ticks per DTS tick
+
+    # primitives
+    tp_channel: np.ndarray        # offline channel number
+    tp_tick_start: np.ndarray     # first sample over threshold [ticks]
+    tp_tick_peak: np.ndarray
+    tp_tot: np.ndarray            # time over threshold [ticks]
+    tp_adc_integral: np.ndarray
+    tp_adc_peak: np.ndarray
+    tp_algorithm: np.ndarray
+    tp_ta: np.ndarray             # activity of each primitive, -1 if none
+
+    # activities
+    ta_tick_start: np.ndarray
+    ta_tick_end: np.ndarray
+    ta_tick_peak: np.ndarray
+    ta_tick_activity: np.ndarray
+    ta_channel_start: np.ndarray
+    ta_channel_end: np.ndarray
+    ta_channel_peak: np.ndarray
+    ta_adc_integral: np.ndarray
+    ta_adc_peak: np.ndarray
+    ta_algorithm: np.ndarray
+    ta_tc: np.ndarray             # candidate of each activity, -1 if none
+    ta_tps: list                  # primitive indices of each activity
+
+    # candidates
+    tc_tick_start: np.ndarray
+    tc_tick_end: np.ndarray
+    tc_tick_candidate: np.ndarray
+    tc_type: np.ndarray
+    tc_algorithm: np.ndarray
+    tc_tas: list                  # activity indices of each candidate
+
+    @property
+    def n_tp(self) -> int:
+        return len(self.tp_channel)
+
+    @property
+    def n_ta(self) -> int:
+        return len(self.ta_tick_start)
+
+    @property
+    def n_tc(self) -> int:
+        return len(self.tc_tick_start)
+
+    def __repr__(self) -> str:
+        return (f"<TriggerChain {self.label!r} tp={self.n_tp} ta={self.n_ta} "
+                f"tc={self.n_tc}>")
+
+
+#: Names of the trigger enum codes (dunedaq trgdataformats).
+TP_ALGORITHMS = {0: "Unknown", 1: "SimpleThreshold", 2: "AbsRunningSum", 3: "RunningSum"}
+TA_ALGORITHMS = {0: "Unknown", 1: "Supernova", 2: "Prescale", 3: "ADCSimpleWindow",
+                 4: "HorizontalMuon", 5: "MichelElectron", 6: "DBSCAN",
+                 7: "PlaneCoincidence", 8: "ChannelDistance", 9: "Bundle",
+                 10: "ChannelAdjacency"}
+TC_TYPES = dict(enumerate((
+    "Unknown", "Timing", "TPCLowE", "Supernova", "Random", "Prescale", "ADCSimpleWindow",
+    "HorizontalMuon", "MichelElectron", "PlaneCoincidence", "DBSCAN", "ChannelDistance",
+    "Bundle", "CTBFakeTrigger", "CTBBeam", "CTBBeamChkvHL", "CTBCustomD", "CTBCustomE",
+    "CTBCustomF", "CTBCustomG", "CTBBeamChkvHLx", "CTBBeamChkvHxL", "CTBBeamChkvHxLx",
+    "NeutronSourceCalib", "ChannelAdjacency", "CIBFakeTrigger", "CIBLaserTriggerP1",
+    "CIBLaserTriggerP2", "CIBLaserTriggerP3", "CTBOffSpillSnapshot",
+    "CTBOffSpillCosmicJura", "CTBOffSpillCRTCosmic", "CTBCustomA", "CTBCustomB",
+    "CTBCustomC", "CTBCustomPulseTrain", "DTSPulser", "DTSCosmic", "SSPLEDCalibration")))
+TC_ALGORITHMS = {0: "Unknown", 1: "Supernova", 2: "HSIEventToTriggerCandidate",
+                 3: "Prescale", 4: "ADCSimpleWindow", 5: "HorizontalMuon",
+                 6: "MichelElectron", 7: "PlaneCoincidence", 8: "Custom",
+                 9: "DBSCAN", 10: "ChannelDistance", 11: "Bundle",
+                 12: "ChannelAdjacency"}
+
+
+def _group(keys, values, n) -> list:
+    """``values`` grouped by ``keys`` (0..n-1), each group in stored order."""
+    keys = np.asarray(keys, np.int64)
+    values = np.asarray(values, np.int64)
+    order = np.argsort(keys, kind="stable")
+    edges = np.searchsorted(keys[order], np.arange(n + 1))
+    return [values[order[edges[i]:edges[i + 1]]] for i in range(n)]
 
 
 def _freeze(value):
@@ -1287,6 +1397,102 @@ class Event:
                 pass
         return OpticalActivity(label=label, **out)
 
+    @_memoised
+    def trigger(self, tag: str | None = None) -> TriggerChain:
+        """The online trigger chain (TPs, TAs, TCs and their links), in TPC ticks.
+
+        ``tag`` picks the primitive producer (e.g. ``tpmakerTPC``); activities
+        and candidates are the ones built from it, found through their
+        associations. A file with primitives but no activities (or no
+        candidates) gives empty arrays for the missing levels.
+        """
+        art = self._src.art
+        tp_prod = self._pick(_TP_CLASS, tag, prefer=("tpmakerTPC",))
+        tp = art.read(tp_prod, _TP_CLASS, self.entry)
+        n_tp = len(tp["channel"])
+        clock = art.service_config("DetectorClocksService").get("ClockSpeedTPC")
+        ticks_per_dts = float(clock or 2.0) / DTS_CLOCK_MHZ
+        label = [tp_prod.rstrip(".")]
+
+        def ticks(v):
+            v = np.asarray(v, np.float64)
+            if len(v) and np.nanmax(v) > _DTS_ABSOLUTE:
+                raise ArtReadError(
+                    f"{tp_prod.rstrip('.')}: absolute DAQ timestamps; placing them "
+                    "in the readout window needs the window's start time, which "
+                    "is not implemented")
+            return v * ticks_per_dts
+
+        def chained(left_cls, right_cls):
+            """The association written by the same process as the primitives, or None."""
+            for p in art.assns_products(left_cls, right_cls):
+                if self._process_of(p) == self._process_of(tp_prod):
+                    return p
+            return None
+
+        # activities: those whose TA<->TP association shares the TPs' process.
+        # A primitive in several activities keeps the last one in tp_ta.
+        ta = {}
+        ta_tps: list = []
+        tp_ta = np.full(n_tp, -1, np.int32)
+        a_tp = chained(_TA_CLASS, _TP_CLASS)
+        if a_tp is not None:
+            maker = a_tp.split("art::Assns_")[-1].split("_")[0]
+            ta_prod = self._pick(_TA_CLASS, maker, prefer=())
+            ta = art.read(ta_prod, _TA_CLASS, self.entry)
+            label.append(ta_prod.rstrip("."))
+            assn = art.read_assns(a_tp, self.entry)
+            n_ta = len(ta["time_start"])
+            ta_tps = _group(assn.left_key, assn.right_key, n_ta)
+            for i, rows in enumerate(ta_tps):
+                tp_ta[rows[(rows >= 0) & (rows < n_tp)]] = i
+        n_ta = len(ta.get("time_start", ()))
+
+        tc = {}
+        tc_tas: list = []
+        ta_tc = np.full(n_ta, -1, np.int32)
+        a_tc = chained(_TA_CLASS, _TC_CLASS)
+        if a_tc is not None:
+            maker = a_tc.split("art::Assns_")[-1].split("_")[0]
+            tc_prod = self._pick(_TC_CLASS, maker, prefer=())
+            tc = art.read(tc_prod, _TC_CLASS, self.entry)
+            label.append(tc_prod.rstrip("."))
+            assn = art.read_assns(a_tc, self.entry)
+            n_tc = len(tc["time_start"])
+            tc_tas = _group(assn.right_key, assn.left_key, n_tc)
+            for j, rows in enumerate(tc_tas):
+                ta_tc[rows[(rows >= 0) & (rows < n_ta)]] = j
+
+        def col(d, key, dtype=np.float64):
+            return np.asarray(d.get(key, ()), dtype)
+
+        start = ticks(tp["time_start"])
+        return TriggerChain(
+            label=" + ".join(label), ticks_per_dts=ticks_per_dts,
+            tp_channel=np.asarray(tp["channel"], np.int32),
+            tp_tick_start=start, tp_tick_peak=ticks(tp["time_peak"]),
+            tp_tot=np.asarray(tp["time_over_threshold"], np.float64) * ticks_per_dts,
+            tp_adc_integral=np.asarray(tp["adc_integral"], np.float64),
+            tp_adc_peak=np.asarray(tp["adc_peak"], np.float64),
+            tp_algorithm=np.asarray(tp["algorithm"], np.int32), tp_ta=tp_ta,
+            ta_tick_start=ticks(col(ta, "time_start")), ta_tick_end=ticks(col(ta, "time_end")),
+            ta_tick_peak=ticks(col(ta, "time_peak")),
+            ta_tick_activity=ticks(col(ta, "time_activity")),
+            ta_channel_start=col(ta, "channel_start", np.int32),
+            ta_channel_end=col(ta, "channel_end", np.int32),
+            ta_channel_peak=col(ta, "channel_peak", np.int32),
+            ta_adc_integral=col(ta, "adc_integral"), ta_adc_peak=col(ta, "adc_peak"),
+            ta_algorithm=col(ta, "algorithm", np.int32), ta_tc=ta_tc, ta_tps=ta_tps,
+            tc_tick_start=ticks(col(tc, "time_start")), tc_tick_end=ticks(col(tc, "time_end")),
+            tc_tick_candidate=ticks(col(tc, "time_candidate")),
+            tc_type=col(tc, "type", np.int32), tc_algorithm=col(tc, "algorithm", np.int32),
+            tc_tas=tc_tas)
+
+    @staticmethod
+    def _process_of(product: str) -> str:
+        """The process name of a product branch: ``Class_label_instance_PROCESS.``."""
+        return product.rstrip(".").rsplit("_", 1)[-1]
+
     #: What a hit can be grouped by, and how to get there from the hit.
     #: Some links are direct; PFParticle goes via clusters, which is how
     #: Pandora actually records it.
@@ -1771,7 +1977,7 @@ class EventFile:
             return products[0]
         # Prefer a disambiguated collection: its WireIDs are resolved, which is
         # what makes a physically meaningful 2D display possible at all.
-        for preferred in ("hitfd", "hitdisam"):
+        for preferred in ("hitfd", "hitpdune", "hitdisam"):
             for p in products:
                 if p.split("_")[1] == preferred:
                     return p

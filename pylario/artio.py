@@ -557,15 +557,16 @@ class ArtFile:
             out.setdefault(str(name), str(reason))
         return out
 
-    def geometry_config(self) -> dict[str, str]:
-        """The ``Geometry`` service settings the file was produced with.
+    def _parameter_sets(self) -> list[str]:
+        """Every fhicl parameter set of the jobs that wrote the file, as text.
 
         art embeds the job's full fhicl configuration in the file as a SQLite
-        database (``RootFileDB``), so the detector is recorded in the data
-        rather than having to be inferred from channel numbers or a filename.
-        Returns e.g. ``{"Name": "dune10kt_v6", "GDML": "dune10kt_v6_refactored.gdml"}``,
-        or ``{}`` if the file does not carry one.
+        database (``RootFileDB``). Read once and kept; ``[]`` if the file does
+        not carry one in a layout we know.
         """
+        if hasattr(self, "_psets"):
+            return self._psets
+        self._psets: list[str] = []
         try:
             key = self._file.key("RootFileDB")
             source = self._file.file.source
@@ -573,9 +574,9 @@ class ArtFile:
             blob = bytes(source.chunk(
                 start, start + int(key.data_compressed_bytes)).raw_data[:])
         except Exception:
-            return {}
+            return self._psets
         if not blob.startswith(b"SQLite format 3\x00"):
-            return {}       # compressed or a layout we do not know; not fatal
+            return self._psets      # compressed or a layout we do not know; not fatal
         import sqlite3
         import tempfile
         with tempfile.NamedTemporaryFile(suffix=".db") as tmp:
@@ -585,14 +586,25 @@ class ArtFile:
                 db = sqlite3.connect(tmp.name)
                 rows = db.execute("select PSetBlob from ParameterSets").fetchall()
             except sqlite3.Error:
-                return {}
+                return self._psets
             finally:
                 try:
                     db.close()
                 except Exception:
                     pass
-        for (raw,) in rows:
-            text = raw if isinstance(raw, str) else raw.decode("utf-8", "replace")
+        self._psets = [raw if isinstance(raw, str) else raw.decode("utf-8", "replace")
+                       for (raw,) in rows]
+        return self._psets
+
+    def geometry_config(self) -> dict[str, str]:
+        """The ``Geometry`` service settings the file was produced with.
+
+        The detector is recorded in the data rather than having to be inferred
+        from channel numbers or a filename. Returns e.g.
+        ``{"Name": "dune10kt_v6", "GDML": "dune10kt_v6_refactored.gdml"}``,
+        or ``{}`` if the file does not carry one.
+        """
+        for text in self._parameter_sets():
             if 'service_type:"Geometry"' not in text:
                 continue
             out = {}
@@ -602,6 +614,30 @@ class ArtFile:
                     out[field] = m.group(1)
             if out:
                 return out
+        return {}
+
+    def service_config(self, service_type: str) -> dict[str, str]:
+        """Top-level scalar settings of one art service, as recorded in the file.
+
+        E.g. ``service_config("DetectorClocksService")["ClockSpeedTPC"] == "2"``.
+        Values are the fhicl text (strings unquoted); nested tables and
+        sequences are skipped. ``{}`` if the service is not recorded.
+        """
+        tag = f'service_type:"{service_type}"'
+        for text in self._parameter_sets():
+            if tag not in text or "@id::" in text:     # skip the services table itself
+                continue
+            out = {}
+            depth = 0
+            for m in re.finditer(r'[{}\[\]]|(\w+):("[^"]*"|[^\s{}\[\]]+)', text):
+                tok = m.group(0)
+                if tok in "{[":
+                    depth += 1
+                elif tok in "}]":
+                    depth -= 1
+                elif depth == 0 and m.group(1):
+                    out[m.group(1)] = m.group(2).strip('"')
+            return out
         return {}
 
     def products(self, pattern: str | None = None) -> list[str]:
