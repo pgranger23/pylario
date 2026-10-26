@@ -567,7 +567,7 @@ TP_ALGORITHMS = {0: "Unknown", 1: "SimpleThreshold", 2: "AbsRunningSum", 3: "Run
 TA_ALGORITHMS = {0: "Unknown", 1: "Supernova", 2: "Prescale", 3: "ADCSimpleWindow",
                  4: "HorizontalMuon", 5: "MichelElectron", 6: "DBSCAN",
                  7: "PlaneCoincidence", 8: "ChannelDistance", 9: "Bundle",
-                 10: "ChannelAdjacency"}
+                 10: "ChannelAdjacency", 11: "SWIFT", 12: "ProtoDUNEBSMWindow"}
 TC_TYPES = dict(enumerate((
     "Unknown", "Timing", "TPCLowE", "Supernova", "Random", "Prescale", "ADCSimpleWindow",
     "HorizontalMuon", "MichelElectron", "PlaneCoincidence", "DBSCAN", "ChannelDistance",
