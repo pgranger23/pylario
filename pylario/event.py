@@ -1433,7 +1433,7 @@ class Event:
         candidates) gives empty arrays for the missing levels.
         """
         art = self._src.art
-        tp_prod = self._pick(_TP_CLASS, tag, prefer=("tpmakerTPC",))
+        tp_prod = self._pick_primitives(tag)
         tp = art.read(tp_prod, _TP_CLASS, self.entry)
         n_tp = len(tp["channel"])
         clock = art.service_config("DetectorClocksService").get("ClockSpeedTPC")
@@ -1449,25 +1449,39 @@ class Event:
                     "is not implemented")
             return v * ticks_per_dts
 
-        def chained(left_cls, right_cls):
-            """The association written by the same process as the primitives, or None."""
+        def chained(left_cls, right_cls, side, prod):
+            """The association whose ``side`` ("left"/"right") points into ``prod``, decoded, or (None, None).
+
+            Matched on the art ProductID its pointers carry: two TP makers in one
+            process (SimpleThreshold and AbsRunningSum) share the process name, and
+            the activities of one must not be hung on the primitives of the other.
+            An empty association has no pointers to tell; it is taken when it
+            shares ``prod``'s process (it links nothing either way).
+            """
+            pid = zlib.crc32(prod.encode())
+            fallback = (None, None)
             for p in art.assns_products(left_cls, right_cls):
-                if self._process_of(p) == self._process_of(tp_prod):
-                    return p
-            return None
+                a = art.read_assns(p, self.entry)
+                ids = np.asarray(a.left_id if side == "left" else a.right_id).ravel()
+                if len(ids):
+                    if np.any(ids == pid):
+                        return p, a
+                elif fallback[0] is None and self._process_of(p) == self._process_of(prod):
+                    fallback = (p, a)
+            return fallback
 
         # activities: those whose TA<->TP association shares the TPs' process.
         # A primitive in several activities keeps the last one in tp_ta.
         ta = {}
         ta_tps: list = []
         tp_ta = np.full(n_tp, -1, np.int32)
-        a_tp = chained(_TA_CLASS, _TP_CLASS)
+        ta_prod = None
+        a_tp, assn = chained(_TA_CLASS, _TP_CLASS, "right", tp_prod)
         if a_tp is not None:
             maker = a_tp.split("art::Assns_")[-1].split("_")[0]
             ta_prod = self._pick(_TA_CLASS, maker, prefer=())
             ta = art.read(ta_prod, _TA_CLASS, self.entry)
             label.append(ta_prod.rstrip("."))
-            assn = art.read_assns(a_tp, self.entry)
             n_ta = len(ta["time_start"])
             ta_tps = _group(assn.left_key, assn.right_key, n_ta)
             for i, rows in enumerate(ta_tps):
@@ -1477,13 +1491,12 @@ class Event:
         tc = {}
         tc_tas: list = []
         ta_tc = np.full(n_ta, -1, np.int32)
-        a_tc = chained(_TA_CLASS, _TC_CLASS)
+        a_tc, assn = chained(_TA_CLASS, _TC_CLASS, "left", ta_prod) if ta_prod else (None, None)
         if a_tc is not None:
             maker = a_tc.split("art::Assns_")[-1].split("_")[0]
             tc_prod = self._pick(_TC_CLASS, maker, prefer=())
             tc = art.read(tc_prod, _TC_CLASS, self.entry)
             label.append(tc_prod.rstrip("."))
-            assn = art.read_assns(a_tc, self.entry)
             n_tc = len(tc["time_start"])
             tc_tas = _group(assn.right_key, assn.left_key, n_tc)
             for j, rows in enumerate(tc_tas):
@@ -1621,6 +1634,25 @@ class Event:
             f"several art::Assns<{left},{right}> producers and none is one of "
             f"{', '.join(prefer)}: "
             f"{', '.join(p.split('art::Assns_')[-1].split('_')[0] for p in products)}")
+
+    def _pick_primitives(self, tag: str | None) -> str:
+        """The TP collection to show: ``tag``'s, else ``tpmakerTPC``, else the one the TAs were built from.
+
+        A file can carry several TP makers (``tpg_dune10kt_1x2x6.fcl`` runs
+        SimpleThreshold and AbsRunningSum side by side); the activities say
+        which one fed them, through the ProductID of their TP pointers.
+        """
+        art = self._src.art
+        products = art.find_product(_TP_CLASS, tag)
+        if tag or len(products) <= 1 or any(p.split("_")[1] == "tpmakerTPC" for p in products):
+            return self._pick(_TP_CLASS, tag, prefer=("tpmakerTPC",))
+        for p in art.assns_products(_TA_CLASS, _TP_CLASS):
+            ids = np.unique(np.asarray(art.read_assns(p, self.entry).right_id).ravel())
+            fed = [art.product_name(int(i)) for i in ids]
+            for q in products:
+                if q in fed:
+                    return q
+        return self._pick(_TP_CLASS, tag, prefer=("tpmakerTPC",))
 
     def _pick(self, classname: str, tag: str | None, prefer: tuple[str, ...]) -> str:
         products = self._src.art.find_product(classname, tag)

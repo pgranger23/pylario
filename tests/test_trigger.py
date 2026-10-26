@@ -85,3 +85,20 @@ def test_trigger_ticks_line_up_with_hits(pdhd):
         assert len(early) > 500 and len(late) > 500
         assert -5 < np.median(early) < 15
         assert abs(np.median(early) - np.median(late)) < 1.5
+
+
+# FD 1x2x6 event with tpg_dune10kt_1x2x6 (SimpleThreshold + AbsRunningSum TPs in one process) and the SWIFT
+# TA maker on the SimpleThreshold ones, e.g. atmnu_radio_18643_1_20260727T135700Z_reco_e0_swift.root
+FD_SWIFT = os.environ.get("PYLARIO_FD_SWIFT", "")
+needs_fd_swift = pytest.mark.skipif(not os.path.exists(FD_SWIFT), reason="set PYLARIO_FD_SWIFT")
+
+
+@needs_fd_swift
+def test_activities_follow_the_primitives_they_were_built_from():
+    ev = EventFile(FD_SWIFT)[0]
+    default = ev.trigger()
+    assert "tpmakerTPCsimpleThr" in default.label      # the TPs the TA maker read, not the first found
+    assert default.n_ta > 0 and default.n_tc == 0
+    assert all(len(t) for t in default.ta_tps)
+    absrs = ev.trigger("tpmakerTPCabsRS")              # same process, but no TA points into it
+    assert absrs.n_tp > 0 and absrs.n_ta == 0 and np.all(absrs.tp_ta == -1)
