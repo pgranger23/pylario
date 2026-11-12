@@ -1877,7 +1877,7 @@ class EventFile:
         every hit, left n_bad_geometry at 0, and put the coordinates a median
         793 cm out. Wrong physics that looks healthy is worse than an error.
         """
-        recorded = self.art.geometry_config().get("Name")
+        recorded = self._recorded_detector()
         if not recorded or recorded == self.geometry.detector:
             return
         raise GeometryError(
@@ -1886,6 +1886,19 @@ class EventFile:
             f"Hits would be placed on the wrong wires without any error.\n"
             f"  drop the geometry argument to let the file choose, or pass "
             f"allow_geometry_mismatch=True if you mean it.")
+
+    def _recorded_detector(self) -> str | None:
+        """Detector name the file was produced with.
+
+        Newer Geometry configurations (e.g. the vertical-drift 1x8x14) leave out
+        ``Name``; LArSoft then names the detector after the GDML file without
+        its extension, which is also what an export of that geometry records.
+        """
+        cfg = self.art.geometry_config()
+        if cfg.get("Name"):
+            return cfg["Name"]
+        gdml = cfg.get("GDML")
+        return os.path.splitext(os.path.basename(gdml))[0] if gdml else None
 
     def _default_geometry(self) -> str:
         here = os.path.dirname(os.path.abspath(__file__))
@@ -1898,7 +1911,7 @@ class EventFile:
         # The file records the Geometry service it was produced with, so match
         # on that rather than guessing. Guessing wrong is not a visible failure:
         # channels simply fall outside the map and every coordinate is NaN.
-        wanted = self.art.geometry_config().get("Name")
+        wanted = self._recorded_detector()
         if wanted:
             for path in found:
                 with np.load(path, allow_pickle=False) as z:

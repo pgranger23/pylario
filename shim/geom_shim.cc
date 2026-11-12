@@ -8,6 +8,7 @@
 #include "dunecore/Geometry/DuneApaWireReadoutGeom.h"
 #include "dunecore/Geometry/ProtoDUNEWireReadoutGeomv7.h"
 #include "dunecore/Geometry/ProtoDUNEWireReadoutGeomv8.h"
+#include "dunecore/Geometry/WireReadoutCRUGeom.h"
 #include "dunecore/Geometry/WireReadoutSorterAPA.h"
 #include "larcorealg/Geometry/OpDetGeo.h"
 #include "cetlib/filepath_maker.h"
@@ -45,6 +46,8 @@ int evd_geom_init(const char* fclfile) {
       gWire = std::make_unique<geo::ProtoDUNEWireReadoutGeomv7>(wp, gGeom.get());
     else if (det.find("protodunev8") != std::string::npos)
       gWire = std::make_unique<geo::ProtoDUNEWireReadoutGeomv8>(wp, gGeom.get());
+    else if (det.find("dunevd10kt") != std::string::npos)      // FD vertical drift: CRU strips
+      gWire = std::make_unique<geo::WireReadoutCRUGeom>(wp, gGeom.get());
     else
       gWire = std::make_unique<geo::DuneApaWireReadoutGeom>(
                 wp, gGeom.get(), std::make_unique<geo::WireReadoutSorterAPA>());

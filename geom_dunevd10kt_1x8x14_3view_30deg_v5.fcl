@@ -1,0 +1,30 @@
+#include "geometry_dune.fcl"
+#include "detectorproperties_dune.fcl"
+#include "larproperties_dune.fcl"
+#include "detectorclocks_dune.fcl"
+
+# DUNE FD vertical drift 1x8x14, 3-view 30 deg, geometry v5, as recorded by the 2026 atmospheric MC
+# (atmnu_radio_vd1x8x14_21839_1_20261012T210425Z_reco.root):
+#   Geometry: { GDML: "dunevd10kt_3view_30deg_v5_refactored_1x8x14ref.gdml"
+#               SortingParameters: { tool_type: "GeoObjectSorterAPA" }  SurfaceY: 147828 }   (no Name)
+#   WireReadout: { ChannelsPerOpDet: 1  service_provider: "DUNEWireReadout" }
+# read back out of the file's own RootFileDB parameter sets, not guessed.
+Geometry:           @local::dunevd10kt_1x8x14_3view_30deg_v5_geo
+WireReadout:        { ChannelsPerOpDet: 1 }
+DetectorProperties: @local::dunefdvd_detproperties
+LArProperties:      @local::dunefd_properties
+DetectorClocks:     @local::dunefdvd_detectorclocks
+
+# Values the reco job ran with (DetectorPropertiesServiceStandard /
+# DetectorClocksServiceStandard in the same file).
+DetectorProperties.NumberTimeSamples: 8500
+DetectorProperties.ReadOutWindowSize: 8500
+DetectorProperties.Temperature: 87
+DetectorProperties.Electronlifetime: 10400
+DetectorClocks.TriggerOffsetTPC: 0
+DetectorClocks.G4RefTime: 0
+DetectorClocks.DefaultTrigTime: 0
+DetectorClocks.DefaultBeamTime: 0
+DetectorClocks.FramePeriod: 4250
+DetectorClocks.ClockSpeedTPC: 2
+DetectorClocks.InheritClockConfig: false
