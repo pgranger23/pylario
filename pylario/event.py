@@ -751,9 +751,12 @@ class Event:
                            amplitude=amplitude, tick=tick, multiplicity=multiplicity)
 
     @_memoised
-    @_memoised
     def pfp_track_scores(self) -> "np.ndarray | None":
         """Pandora's ``TrackScore`` per PFParticle, NaN where it has none.
+
+        Pandora writes ``TrackScore = -1`` for a PFParticle it did not
+        characterise (its metadata then carries none of the MVA features);
+        that is "no score", not a confident shower, so it reads as NaN too.
 
         Indexed by PFParticle key, so it lines up with the PFParticle
         collection. Returns ``None`` when the sample has no Pandora metadata
@@ -777,7 +780,8 @@ class Event:
                 continue
             props = dict(maps[meta_i])
             if "TrackScore" in props:
-                out[pfp_i] = float(props["TrackScore"])
+                score = float(props["TrackScore"])
+                out[pfp_i] = score if score >= 0 else np.nan    # -1: not characterised
         return out
 
     def _pfp_of(self, other: str, prefer: tuple[str, ...]) -> "np.ndarray | None":
